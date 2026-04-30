@@ -1,5 +1,5 @@
-# CANBUS-Stepper
-Daisy Chain-able Closed Loop Stepper motor driver and controller.
+# CANBUS Stepper
+Daisy Chain-able Closed Loop Stepper motor driver and controller. Made by Things by Josh
 
 Kits available shortly at [thingsbyjosh.com](thingsbyjosh.com)
 
@@ -70,3 +70,4 @@ If your microcontroller has a CAN / TWAI peripheral then you need a tranceiver. 
 Alternatively you can also run the CANBUS Stepper with no external controller by running your code directly on the onbaord ESP32-S3 (programmable with the Arduino IDE)
 
 The CANBUS Stepper can also run ESPHome, as a DC powered alternative to the [PD Stepper](https://thingsbyjosh.com/products/pd-stepper). Example coming soon...
+
