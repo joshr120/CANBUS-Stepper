@@ -1,7 +1,7 @@
 # CANBUS Stepper
 Daisy Chain-able Closed Loop Stepper motor driver and controller. Made by Things by Josh
 
-Kits available shortly at [thingsbyjosh.com](thingsbyjosh.com)
+Kits available soon at [thingsbyjosh.com](thingsbyjosh.com)
 
 <p float="left">
   <img src="https://github.com/user-attachments/assets/72307142-61fa-448f-8601-798ca4e54502" width="48%" /> 
@@ -42,6 +42,12 @@ The custom web GUI allows any board to be configured, controlled and monitored o
 
 <img width="1696" height="1272" alt="GUI" src="https://github.com/user-attachments/assets/4bc0999e-9a1c-4a68-9058-b91453482c07" />
 
+---
+
+### Refer to the [CANBUS Stepper datasheet](https://github.com/joshr120/CANBUS-Stepper/blob/main/CANBUS%20Stepper%20Datasheet.pdf) for all electrical specifications and connections. ###
+
+--- 
+
 ## Node Software: ##
 The default CANbus Node software is what ships on all boards. 
 
@@ -71,6 +77,4 @@ Alternatively you can also run the CANBUS Stepper with no external controller by
 
 The CANBUS Stepper can also run ESPHome, as a DC powered alternative to the [PD Stepper](https://thingsbyjosh.com/products/pd-stepper). Example coming soon...
 
-##  Electrical Connections: ##
-Refer to the [CANBUS Stepper datasheet](https://github.com/joshr120/CANBUS-Stepper/blob/main/CANBUS%20Stepper%20Datasheet.pdf) for all electrical specifications and connections.
 
