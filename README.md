@@ -72,5 +72,5 @@ Alternatively you can also run the CANBUS Stepper with no external controller by
 The CANBUS Stepper can also run ESPHome, as a DC powered alternative to the [PD Stepper](https://thingsbyjosh.com/products/pd-stepper). Example coming soon...
 
 ##  Electrical Connections: ##
-Refer to the CANBUS Stepper datasheet for all electrical specifications and connections.
+Refer to the [CANBUS Stepper datasheet](https://github.com/joshr120/CANBUS-Stepper/blob/main/CANBUS%20Stepper%20Datasheet.pdf) for all electrical specifications and connections.
 
