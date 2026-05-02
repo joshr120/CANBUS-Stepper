@@ -1,7 +1,7 @@
 # CANBUS Stepper
 Daisy Chain-able Closed Loop Stepper motor driver and controller. Made by Things by Josh
 
-Kits available soon at [thingsbyjosh.com](thingsbyjosh.com)
+Kits available now at [thingsbyjosh.com](https://thingsbyjosh.com/products/canbus-stepper)
 
 <p float="left">
   <img src="https://github.com/user-attachments/assets/72307142-61fa-448f-8601-798ca4e54502" width="48%" /> 
@@ -32,7 +32,7 @@ A web GUI allows easy configuration and debugging of a whole system over a singl
 - Open-Source software with example code
 - WiFi and BLE
 - Works with ESPHome
-- Klipper intergration in the works
+- Klipper integration in the works
 
 ## Web GUI: ##
 
