@@ -37,6 +37,20 @@ Enable closed loop control in the web GUI
 1. Change the "Set Position (deg)" to 360 by double clicking the value.
 2. Under "LIVE TELEMETRY, the "Encoder Angle (deg)" should read 360 deg ± 1 deg. If this instead reads -360 set the "Map Direction" to 1. If it reads 180 degrees, set the "Steps per Rev" to 400.
 
+## Sensorless Homing
+
+Sensorless homing is available via the StallGuard feature of the TMC2209 driver. This allows the motor to find a home position by detecting an increase in the motor load once it reaches a hard stop. The CAN Node software exposes this for easy use.
+
+The procedure for sensorless homing it is as follows:
+
+  1. Set "Stallguard Behaviour" (MsgType 7) to 4.
+
+  2. Set "Set Velocity (deg/sec)" (MsgType 3) to your desired speed / direction.
+
+Once the stall guard is triggered it will stop the motor and reset the zero position. (other stall behaviours can also be set by changing the "Stallguard Behaviour")
+
+You can adjust the "Stallguard Threshold" (MsgType 12) to change at what motor load this is triggered, and live view "Stallguard Value" to view the live value. All configurable via the web GUI.
+
 ## Serial Control
 
 To control a CANBUS Stepper node (or systems of nodes) over hardware serial, the AUX connector can be configured for serial Control.
