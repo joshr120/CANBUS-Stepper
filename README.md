@@ -8,6 +8,11 @@ Kits available now at [thingsbyjosh.com](https://thingsbyjosh.com/products/canbu
   <img src="https://github.com/user-attachments/assets/f4183227-76ab-452c-9f88-e1573f00b47e" width="48%" />
 </p>
 
+<p float="left">
+  <img src="https://github.com/user-attachments/assets/d43e1a59-d1aa-4397-b68c-2c2b7e41a4ac" width="48%" /> 
+  <img src="https://github.com/user-attachments/assets/8b3a8ec5-3be8-45ff-bc09-0e3eb4695a2f" width="48%" />
+</p>
+
 The CANBUS Stepper integrates all essential components required to drive a NEMA 17 stepper
 motor into a single compact board, with control handled over CAN bus. Its CAN-based interface,
 combined with high-current connectors, enables straightforward daisy chaining of multiple boards.
@@ -26,6 +31,7 @@ A web GUI allows easy configuration and debugging of a whole system over a singl
 - High current power pass through connectors
 - TMC2209 Silent Stepper Driver
 - 14 Bit Magnetic Absolute Rotary Encoder
+- Sensorless Homing
 - Qwiic / Stemma QT Compatible
 - Configurable AUX Connector.
 - Web Based GUI For Configuration
