@@ -77,11 +77,6 @@ The MsgType field determines whether the frame is a **command** or **telemetry**
 
 22, 26-31 for future expansion
 
-### Future:
-- More TMC2209 settings 
-- Configure AUX pins? (options for Input, Ouput, PWM, Hardware Serial etc)
-
-
 
 # Telemetry Message Types (32-63)
 Encoder angle (deg) is constantly ouptput at the primary (1) set rate, the other Periodic messages are sent at the secondary (2) rate. The fault state and button states are also sent on state change.
@@ -99,11 +94,6 @@ Encoder angle (deg) is constantly ouptput at the primary (1) set rate, the other
 | 40            | Software Version     | 0–3: float version <br>4–7: optional         | Node firmware version            | Yes (2)  | Yes         |
 | 41            | ESP32 Temperature    | 0–3: float temperature (°C)<br>4–7: optional | ESP32 internal temp sensor       | Yes (2)  | Yes         |
 | 42            | Current Velocity (deg/sec)| 0–3: float velocity <br>4–7: optional   | 32-bit float                     | Yes (2)  | Yes         |
-
-### Future:
-- More info
-- Seperate enable state (seperate from MSG 5?)
-- More than 2 periodic types?
 
 
 ## Examples:
@@ -172,7 +162,7 @@ The AUX connector can be setup for various different use cases.
 
 This is the 4 pin JST SH connector on the underside of the PCB. AUX1 is Pin 3 on this connector, and AUX2 is Pin 4.
 
-Each pin is configured independently. The 8-byte payload is split into two 4-byte blocks — the first for AUX1 and the second for AUX2:
+Each pin is configured independently. The 8-byte payload is split into two 4-byte blocks - the first for AUX1 and the second for AUX2:
 
 | Bytes | Field              | Description                        |
 |-------|--------------------|------------------------------------|
