@@ -54,7 +54,7 @@ The MsgType field determines whether the frame is a **command** or **telemetry**
 | 4             | Set Current              | 0–1: uint16 target current/torque<br>2–7: optional          | Set motor current, percentage 0–100              | Yes              | 30 (%)          | Yes         |
 | 5             | Enable                   | 0: 0 = disable, 1 = enable<br>1–7: optional                | Enable/disable motor                              | No               | -               | Yes         |
 | 6             | Emergency Stop           | 0–7: optional                                              | Immediately stop motor/driver                     | No               | -               | Yes         |
-| 7             | Sensorless Home          | 0: direction (0,1 = negative, 2,3 = positive)<br>1–7: optional | Perform sensorless homing <br> (0 & 2 will reset enc position once stalled, 1 & 3 will not)  | No               | -               | Not Yet     |
+| 7             | Stallguard Behaviour     | 0-1: uint16 stall behaviour <br>2–7: optional              | Action when stallgaurd triggered (sensorless homing) <br> 0 = Do Nothing <br> 1 = Stop <br> 2 = Stop and set as zero position <br> 3 = Stop ONCE (resets to mode 0 after) <br> 4 = Stop and set as zero position ONCE (resets to mode 0 after) | No               | 0 (Do Nothing)               | Yes    |
 | 8             | Zero Encoder at boot     | 0: 0 = disabled, 1 = enabled<br>1–7: optional              | Sets the power on position as "0" by applying an offset | Yes        | 0 (disabled)    | Yes         |
 | 9             | LED State's              | 0: LED1 State, 1: LED2 State<br>2–7: optional              | Control onboard LED's                             | Yes              | LEDs OFF        | Partial     |
 | 10            | Steps per Rev            | 0–1: uint16 steps/rev<br>2–7: optional                     | Configure steps per revolution                    | Yes              | 200             | Yes         |
@@ -93,7 +93,7 @@ Encoder angle (deg) is constantly ouptput at the primary (1) set rate, the other
 | 34            | Voltage              | 0–3: float voltage (V)<br>4–7: optional      | 32-bit float                     | Yes (2)  | Yes         |
 | 35            | Button States        | 0: SW1<br>1: SW2<br>2–7: optional            | To be interrupt driven in future | Yes (2)  | Not Yet     |
 | 36            | Stallguard Value     | 0–3: uint32 stallguard<br>4–7: optional      | Load / stall detection           | Yes (2)  | Not Yet     |
-| 37            | Stallguard Triggered | 0: 0 = no stall, 1 = stall<br>1–7: optional  | Boolean indicator                | Yes (2)  | Not Yet     |
+| 37            | Stallguard Triggered | 0: 0 = no stall, 1 = stall<br>1–7: optional  | Boolean indicator, sent on stall interupt| No   | Not Yet     |
 | 38            | Board Temperature    | 0–3: float temperature (°C)<br>4–7: optional | NTC on the underside of the PCB  | Yes (2)  | Yes         |
 | 39            | Fault Code           | 0–1: uint16 fault code<br>2–7: optional      | Bitfield or enumerated faults    | Yes (2)  | Not Yet     |
 | 40            | Software Version     | 0–3: float version <br>4–7: optional         | Node firmware version            | Yes (2)  | Yes         |

@@ -4,7 +4,7 @@
  * 
  * Each Node can receive commands over serial (USB) and CANBUS.
  * Messages received over USB serial will be forwarded onto the CAN bus (USB to CAN bridge).
- * See the CAN packet document for CAN and serial message formats
+ * See the CAN protocol document for CAN and serial message formats
  * 
  *
  * Architecture:
@@ -14,7 +14,7 @@
  *
  * TODO:
  * - max out I2C speed?
- * - Give error for invalid commands?
+ * - Give error for invalid commands
  * - Encoder calibration option?
  * - Add header file with CAN ID's instead of magic numbers!
  * - Better handle change of microsteps / accel / dir etc. better (update all values which rely on these when changed)
@@ -27,21 +27,15 @@
  * - Error if another node with same ID exists
  * - Rounding errors on deg -> steps -> deg (when reporting, current setpos != the actual set pos)
  * - Add relative move command!
- * - Option to reset encoder pos on stall guard (sensorless homing)
  * - Check EEPROM settings being overwritten on flash? (need to decide preferred bahaviour).
  * - Rest of CAN msg types
- *    - Sensorless home
- *    - Stallguard
  *    - Reset to default
  *    - Set Node ID
  *    - Fault codes
  *    - AUX conn
- *       - I2C Slave Control? (removed from protocol)
  *       - Digital Input (RTR part)
  *       - Analog Input (RTR part)
- *       - AUX CONN STORE FUNTION IN EEPROM & SET AT BOOT!
  * 
-
  */
 
 
@@ -98,7 +92,7 @@ CanFrame rxFrame;
 CanFrame txFrame;
 
 // ---------------- FIRMWARE VERSION ----------------------------------------------------------
-float firmwareVersion = 0.06;
+float firmwareVersion = 0.07;
 // --------------------------------------------------------------------------------------------
 
 // ---------------- Stepper Driver ---------------
@@ -182,6 +176,18 @@ bool lastSW2State = HIGH;
 unsigned long lastDebounceTime = 0;
 const unsigned long DEBOUNCE_DELAY_MS = 50;
 
+// ---------------- StallGuard / Sensorless Homing ---------------
+// Flag set by DIAG pin interrupt, cleared and sent in main loop
+volatile bool stallguardTriggered = false;
+
+// StallGuard action mode (MsgType 7):
+//   0 = Do nothing (stall only sends MsgType 37 telemetry)
+//   1 = Instant stop
+//   2 = Instant stop and set current position as zero
+//   3 = Instant stop ONCE (auto-resets to mode 0 after triggered)
+//   4 = Instant stop and set as zero ONCE (auto-resets to mode 0 after triggered)
+uint8_t sensorlessHomeMode = 0;
+
 // ---------------- Timers and critical section ---------------
 static esp_timer_handle_t stepTimer = nullptr;
 static esp_timer_handle_t motionTimer = nullptr;
@@ -190,6 +196,7 @@ portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 // ---------------- Forward declarations ---------------
 void IRAM_ATTR onStepTimer(void* arg);   // One-Shot pulse generator
 void IRAM_ATTR onMotionTimer(void* arg); // 1000Hz Ramp Calculator
+void IRAM_ATTR onDiagInterrupt();        // DIAG pin ISR for stall detection
 void readEncoder(); 
 void canSendTelemetry(uint8_t msgType, const void *data, uint8_t size);
 void forwardTelemetryToSerial(const CanFrame &frame);
@@ -235,6 +242,10 @@ void setup() {
 
     digitalWrite(MS1, LOW); // used to set serial address in UART mode
     digitalWrite(MS2, LOW);
+
+    // Attach DIAG interrupt for StallGuard stall detection
+    // DIAG pin goes HIGH when a stall is detected (requires SpreadCycle / TCOOLTHRS to be set)
+    attachInterrupt(digitalPinToInterrupt(DIAG), onDiagInterrupt, RISING);
 
     // start I2C
     Wire.begin(SDA, SCL);
@@ -298,7 +309,7 @@ void setup() {
     stepper_driver.setStallGuardThreshold(stallThresh);
     stepper_driver.enableAutomaticCurrentScaling();
     stepper_driver.enableStealthChop(); // stealth chop needs to be enabled for stall detect
-    stepper_driver.setCoolStepDurationThreshold(5000); // TCOOLTHRS
+    stepper_driver.setCoolStepDurationThreshold(5000); // TCOOLTHRS - gates StallGuard, prevents false triggers at standstill
     //set standstill mode
     if (standstillMode == 0){ stepper_driver.setStandstillMode(stepper_driver.NORMAL);}
     else if (standstillMode == 1){ stepper_driver.setStandstillMode(stepper_driver.FREEWHEELING);}
@@ -359,6 +370,55 @@ void setup() {
 // -------------------- Main Loop --------------------
 void loop() {
 
+    // Check StallGuard DIAG interrupt flag (set by onDiagInterrupt ISR)
+    if (stallguardTriggered) {
+        stallguardTriggered = false;
+        Serial.println("StallGuard triggered! (DIAG pin)");
+
+        // --- Sensorless homing action ---
+        if (sensorlessHomeMode >= 1) {
+            // Instant stop — no deceleration ramp
+            velocitySetpoint = 0;  // clear stored setpoint so re-sending same velocity works
+            portENTER_CRITICAL(&timerMux);
+            motion.targetSpeed_q  = 0;
+            motion.currentSpeed_q = 0;
+            isr_stepDelay_us      = 0;
+            motion.isRunning      = false;
+            // Lock target to current position so position mode doesn't restart motion
+            motion.targetPos      = isr_currentPos;
+            portEXIT_CRITICAL(&timerMux);
+            posSetpoint = isr_currentPos;
+            Serial.println("Sensorless home: motor stopped instantly");
+
+            if (sensorlessHomeMode == 2 || sensorlessHomeMode == 4) {
+                // Zero both the step counter and encoder offset so this becomes position 0
+                portENTER_CRITICAL(&timerMux);
+                isr_currentPos   = 0;
+                motion.targetPos = 0;
+                portEXIT_CRITICAL(&timerMux);
+                posSetpoint = 0;
+
+                // Zero encoder by reading its current raw value and storing it as offset
+                readEncoder();
+                // total_encoder_counts is relative to previous offset; add it back in
+                encoder_offset += (int)total_encoder_counts;
+                total_encoder_counts = 0;
+                angle = 0.0;
+                Serial.println("Sensorless home: position zeroed (step + encoder)");
+            }
+
+            if (sensorlessHomeMode == 3 || sensorlessHomeMode == 4) {
+                // One-shot mode — disarm after triggering
+                sensorlessHomeMode = 0;
+                Serial.println("Sensorless home: mode reset to 0 (one-shot complete)");
+            }
+        }
+
+        // Always send MsgType 37 stall telemetry
+        uint8_t stallPayload = 1;
+        canSendTelemetry(37, &stallPayload, sizeof(stallPayload));  // msgType 37
+    }
+
     // Send angle at chosen frequency
     if (((millis() - lastFreq1) > 1000/reportFreq1) & (reportFreq1 != 0)){
       readEncoder(); // may need to do this more often depending on report freq
@@ -372,7 +432,7 @@ void loop() {
 
     }
 
-    // Secondary periodic CAN ouptuts
+    // Secondary periodic CAN outputs
     if (((millis() - lastFreq2) > 1000/reportFreq2) & (reportFreq2 != 0)){
       //Send voltage:
       float voltage = readInputVoltage();
@@ -388,7 +448,10 @@ void loop() {
 
       //send Firmware version:
       canSendTelemetry(40, &firmwareVersion, sizeof(firmwareVersion));  // msgType 40
-      
+
+      // Send StallGuard value (SG_RESULT from TMC2209 — 10-bit, 0 = stall):
+      uint32_t sgValue = stepper_driver.getStallGuardResult();
+      canSendTelemetry(36, &sgValue, sizeof(sgValue));  // msgType 36
 
       // //send Current Velocity:
       // float currentVelocity = ((float)motion.currentSpeed_q / 65536.0f) * (360.0f / (stepsPerRev * microsteps)); //convert from Q16 int to deg/s float
@@ -463,6 +526,13 @@ void loop() {
 
     // Small yield to keep system responsive
     delay(1);
+}
+
+// -------------------- DIAG Pin ISR (StallGuard) --------------------
+// Fires on rising edge of DIAG pin — indicates a stall has been detected.
+// Only sets a flag; actual CAN transmission happens in the main loop.
+void IRAM_ATTR onDiagInterrupt() {
+    stallguardTriggered = true;
 }
 
 // -------------------- Motion Control Loop (1000Hz) --------------------
@@ -809,7 +879,19 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               portEXIT_CRITICAL(&timerMux);
               break;
           
-          case 8: // Zero Enc at boot (bool)
+          case 7: // StallGuard action (uint8)
+              // Sets behaviour when a stall is detected on the DIAG pin.
+              //   0 = Do nothing (stall only sends MsgType 37 telemetry)
+              //   1 = Instant stop
+              //   2 = Instant stop and set current position as zero
+              //   3 = Instant stop ONCE (resets to mode 0 after triggered)
+              //   4 = Instant stop and set as zero ONCE (resets to mode 0 after triggered)
+              if(len >= 1) {
+                  sensorlessHomeMode = payload[0];
+                  if (sensorlessHomeMode > 4) sensorlessHomeMode = 0; // sanitise
+                  Serial.printf("StallGuard action set to: %d\n", sensorlessHomeMode);
+              }
+              break;
               if(len >= 1) {
                   zeroEncAtBoot = payload[0] != 0;
                   Serial.printf("Zero Enc at boot set to: %d\n", zeroEncAtBoot);
@@ -838,6 +920,18 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
                   Serial.printf("Microsteps set to: %u\n", microsteps);
                   stepper_driver.setMicrostepsPerStep(microsteps);
                   recalcMotionParams();
+              }
+              break;
+
+          case 12: // StallGuard Threshold (int16)
+              // Negative values = more sensitive; positive = less sensitive
+              // Stored in stallThresh (unsigned int) but cast through int16 to allow signed values
+              if(len >= 2) {
+                  int16_t thresh;
+                  memcpy(&thresh, payload, 2);
+                  stallThresh = (unsigned int)(int)thresh;
+                  Serial.printf("StallGuard threshold set to: %d\n", (int16_t)stallThresh);
+                  stepper_driver.setStallGuardThreshold(stallThresh);
               }
               break;
   
@@ -1062,6 +1156,10 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               canSendTelemetry(5, &driverEnabled, sizeof(driverEnabled));
               break;
 
+          case 7:
+              canSendTelemetry(7, &sensorlessHomeMode, sizeof(sensorlessHomeMode));
+              break;
+
           case 8:
               canSendTelemetry(8, &zeroEncAtBoot, sizeof(zeroEncAtBoot));
               break;
@@ -1077,6 +1175,12 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
           case 11:
               canSendTelemetry(11, &microsteps, sizeof(microsteps));
               break;
+
+          case 12: { // Send current StallGuard threshold
+              int16_t thresh = (int16_t)stallThresh;
+              canSendTelemetry(12, &thresh, sizeof(thresh));
+              break;
+          }
 
           case 13: {
               unsigned int ct = controlType; //copy to new var as is used by ISR
