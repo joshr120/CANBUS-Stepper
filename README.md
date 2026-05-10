@@ -61,7 +61,7 @@ The Node ID is set by holding down button "SW1" on power up. Release the button 
 
 The software is open-source and available in the software folder. You can use it as is, modify it for your needs or run your own software entirety.
 
-Please refer to the [CAN protocol document](https://github.com/joshr120/CANBUS-Stepper/blob/main/Software/CAN%20Protocol.md) for more information.
+Please refer to the [CAN protocol document](https://github.com/joshr120/CANBUS-Stepper/blob/main/Software/CAN%20Protocol.md) for more information on the protocol, and the [getting started guide](https://github.com/joshr120/CANBUS-Stepper/tree/main/Getting%20Started) for more info on the GUI and Node Software.
 
 ##  Control Software: ##
 There are multiple ways to contol a CANBUS Stepper board.
