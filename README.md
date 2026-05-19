@@ -57,6 +57,8 @@ The custom web GUI allows any board to be configured, controlled and monitored o
 ## Node Software: ##
 The default CANbus Node software is what ships on all boards. 
 
+The primary idea is you can connect to one node (over USB or Serial or CAN) and then control all other nodes in the chain from this single connection.
+
 The Node ID is set by holding down button "SW1" on power up. Release the button after the desired number of "LED 1" flashes (number of flashes = Node ID). Upto 31 boards can be on a single bus and they all need a unique Node ID.
 
 The software is open-source and available in the software folder. You can use it as is, modify it for your needs or run your own software entirety.
