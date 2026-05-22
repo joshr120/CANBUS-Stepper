@@ -1,15 +1,81 @@
-# Work In Progress. Please refer to steps 1-7 in the [PD Stepper Guide ](https://github.com/joshr120/PD-Stepper/tree/main/Getting%20Started)for assembling a kit #
+# **CANBUS Stepper** - Getting Started
+If you just received your CANBUS Stepper this will show you how to spin a motor and configure the driver using the web GUI.
 
-To use the web GUI visit [thingsbyjosh.com/canbus_gui](https://thingsbyjosh.com/canbus_gui)
+Web GUI: [thingsbyjosh.com/canbus_gui](https://thingsbyjosh.com/canbus_gui)
+
+## Assembling a kit onto a Nema 17 ##
+For easiest assembly your motor should have the stardard 6 pin JST PH connector, and the included screws (M3x40mm) are best suited for a 34mm length motor.
+For example the Hanpose 17HS3401S, available on [Amazon](https://www.amazon.com/Captive-Stepper-17HS3401S-4-Lead-Printer/dp/B0G9KRJFTY) and [Aliexpress](https://www.aliexpress.com/item/1005006577156384.html).
+
+### 1. Install the magnet onto your motor (only needed for reading encoder position)
+   
+   Carefully superglue the included diametrically magnitised magnet onto the centre of the motor shaft.  
+
+   Only a very small amount of glue is required, take care not to get any in the motor bearing.  
+   
+   <img src="https://github.com/user-attachments/assets/c32ad5e4-c292-4e67-a0ee-864bf49cce15" width="40%" style="margin: 15px;"/>
+
+### 2. Remove the original motor screws
+
+<img src="https://github.com/user-attachments/assets/aff3b972-af76-4eab-b2e3-df1b70109dc4" width="40%" />
+
+### 3. Peel off the protective film and add one of the included heat pads onto the heat spreader
+
+  Ensure this is added on the recessed side of the heat spreader
+
+<img src="https://github.com/user-attachments/assets/619f5212-02ab-4623-b3c7-b2ffd994ca20" width="40%" />
+<img src="https://github.com/user-attachments/assets/c62a9630-885b-43b8-9ef4-58c4579a1af6" width="40%" />
+
+### 4. Place the spacer onto the motor ensuring it is in the orientation show relative to the motor connector
+
+<img src="https://github.com/user-attachments/assets/975f0007-0633-43b5-bc02-90deb9b1e985" width="40%" />
+
+### 5. Add the PCB
+
+Again ensure the PCB is installed in the orientation shown so the motor connectors as well as the heat pad line up
+
+<img src="https://github.com/user-attachments/assets/a98cf78d-519c-4a04-afc4-1bb1bafb2742" width="40%" />
+
+### 5. Add the cover and new countersunk screws
+
+   The included screws are best suited for a 34mm length Nema 17 you may need longer or shorter ones depending on your motor. (included ones are M3x40mm)
+   
+   <img src="https://github.com/user-attachments/assets/90658808-802d-4ca8-b0fa-40012e529a51" width="40%" />
+   <img src="https://github.com/user-attachments/assets/860b4957-be2f-4ece-8546-8102fa0447d0" width="40%" />
+
+### 6. Add the heatsink
+
+   Use the larger heatsink if you plan on running the motor for long periods and/or at high currents
+   
+   <img src="https://github.com/user-attachments/assets/281de296-c433-4fc9-ba4a-39a087a0c895" width="40%" />
+   <img src="https://github.com/user-attachments/assets/5bc483ff-dd3c-4c62-a775-2643c6d06de9" width="40%" />
+
+
+### 7. Plug in motor loom
+
+ There are 2 looms provided in the kit for different motors, try one and if in the next steps your motor stutters/doesnt spin, power off the board and try the other one. 
+
+  Note. Do not disconnect/connect the motor while the board is powered.
+
+  <img src="https://github.com/user-attachments/assets/fc9cb31f-0f76-4702-9303-2ef88845c0f4" width="40%" />
+  
+
 
 ## Power on the Board
 
 Connect a 12V or 24V supply to the "PWR IN" connector.
 
-You can power the board via the USB Type-C connector for configuration and monitoring, but you will NOT be able to power/move the motor. (See the PD [Stepper](https://thingsbyjosh.com/products/pd-stepper) if you want a USB PD powered stepper motor driver)
+<img src="https://github.com/user-attachments/assets/b363f0bc-ffd2-418a-9c67-79c06eeb4b52" width="50%" />
+
+
+You can power the board via the USB Type-C connector for configuration and monitoring, but you will NOT be able to power/move the motor. (See the [PD Stepper](https://thingsbyjosh.com/products/pd-stepper) if you want a USB PD powered stepper motor driver)
 
 ## Daisy Chaining Boards
 Pay attention to the IN vs OUT labels on the Power connectors. 
+
+<img src="https://github.com/user-attachments/assets/44bd9c1c-b871-4c80-a022-6918a9807678" width="40%" />
+<img src="https://github.com/user-attachments/assets/4861487d-afa7-44a8-a55b-be03286a4ab3" width="40%" />
+
 
 When daisy chaining nodes together set the "CAN TERM" DIP switch ON for the two boards at each end of the string, and OFF for all others.
 
