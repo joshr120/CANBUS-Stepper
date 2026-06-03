@@ -40,8 +40,8 @@ Again ensure the PCB is installed in the orientation shown so the motor connecto
 
    The included screws are best suited for a 34mm length Nema 17 you may need longer or shorter ones depending on your motor. (included ones are M3x40mm)
    
-   <img src="https://github.com/user-attachments/assets/90658808-802d-4ca8-b0fa-40012e529a51" width="40%" />
    <img src="https://github.com/user-attachments/assets/860b4957-be2f-4ece-8546-8102fa0447d0" width="40%" />
+   <img src="https://github.com/user-attachments/assets/90658808-802d-4ca8-b0fa-40012e529a51" width="40%" />
 
 ### 6. Add the heatsink
 
