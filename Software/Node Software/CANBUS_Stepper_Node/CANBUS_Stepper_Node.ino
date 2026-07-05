@@ -21,20 +21,14 @@
  * - When driver comes back online (VBUS rises) re-configure with current values better (as values may have been set when driver was not powered)
  *     - (driver setup function!)
  * - Verify accel/decel/speed timing
- * - Add Reset to defaults? (and better input sanitation)
+ * - Add better input sanitation for other commands (range checks, e.g. as done for Set Node ID)
  * - Add RTR for telem as well (for individual value request)!
- * - Disable on emergency STOP !!!!
  * - Error if another node with same ID exists
  * - Rounding errors on deg -> steps -> deg (when reporting, current setpos != the actual set pos)
  * - Add relative move command!
  * - Check EEPROM settings being overwritten on flash? (need to decide preferred bahaviour).
  * - Rest of CAN msg types
- *    - Reset to default
- *    - Set Node ID
  *    - Fault codes
- *    - AUX conn
- *       - Digital Input (RTR part)
- *       - Analog Input (RTR part)
  * 
  */
 
@@ -80,6 +74,7 @@ static const uint32_t DIR_MASK  = (1UL << DIR);
 
 // Other
 #define LED1 10
+#define LED2 12
 #define SW1 35
 #define SW2 36
 #define VBUS 4
@@ -92,7 +87,7 @@ CanFrame rxFrame;
 CanFrame txFrame;
 
 // ---------------- FIRMWARE VERSION ----------------------------------------------------------
-float firmwareVersion = 0.07;
+float firmwareVersion = 0.08;
 // --------------------------------------------------------------------------------------------
 
 // ---------------- Stepper Driver ---------------
@@ -140,31 +135,54 @@ volatile bool isr_dirState = false;    // The specific direction pin state to wr
 // Adjustable deadband for position mode (avoids oscillation at target)
 volatile int32_t isr_deadband = 2; 
 
-// ---------------- Settings from EEPROM ---------------
-unsigned int NODE_ID = 1;  // Change per node (0-31)
+// ---------------- Default Values (per CAN Protocol doc) ---------------
+// Single source of truth for both the compiled-in startup defaults below
+// AND the "Reset to Default" command (MsgType 23) — keeps the two in sync.
+const unsigned int DEFAULT_MICROSTEPS      = 16;
+const unsigned int DEFAULT_CURRENT         = 30;      // %
+const unsigned int DEFAULT_STALL_THRESH    = 10;
+const unsigned int DEFAULT_STEPS_PER_REV   = 200;
+const unsigned int DEFAULT_CONTROL_TYPE    = 1;       // 0=Open Loop, 1=Closed Loop
+const unsigned int DEFAULT_STANDSTILL_MODE = 0;       // 0=Normal
+const bool         DEFAULT_MAP_DIRECTION   = 0;       // 0=Normal
+const float        DEFAULT_POS_SPEED       = 2000.0f; // deg/sec
+const float        DEFAULT_ACCEL           = 720.0f;  // deg/sec^2
+const float        DEFAULT_DECEL           = 720.0f;  // deg/sec^2
+const unsigned int DEFAULT_REPORT_FREQ1    = 10;      // Hz (angle)
+const unsigned int DEFAULT_REPORT_FREQ2    = 1;       // Hz (other)
+const bool         DEFAULT_ENABLE_ON_BOOT  = 1;
+const bool         DEFAULT_LED3V3_DISABLE  = 0;
+const bool         DEFAULT_ZERO_ENC_BOOT   = 0;
+const bool         DEFAULT_LED1_STATE      = 0;
+const bool         DEFAULT_LED2_STATE      = 0;
+const uint8_t      DEFAULT_AUX_PAYLOAD[8]  = {0, 0, 0, 0, 0, 0, 0, 0}; // both pins disabled
 
-unsigned int microsteps = 16;
-unsigned int current = 30;
-unsigned int stallThresh = 10;
-unsigned int stepsPerRev = 200;
-volatile unsigned int controlType = 0; // 0=Open Loop, 1=Closed Loop
-unsigned int standstillMode = 0;
-bool mapDirection = 0;
-float posSpeed = 1080.0f; // Max Speed (deg/sec) - human-friendly
-float accel = 720.0f;    // Acceleration (deg/sec^2) - human-friendly
-float decel = 720.0f;    // Deceleration (deg/sec^2) - human-friendly
-unsigned int reportFreq1 = 10;
-unsigned int reportFreq2 = 1;
-bool enableOnBoot = 1;
-bool LED3V3Disable = 0;
-bool zeroEncAtBoot = 0;
+// ---------------- Settings from EEPROM ---------------
+unsigned int NODE_ID = 1;  // Change per node (0-31). NOT reset by MsgType 23 -- see resetToDefaults()
+
+unsigned int microsteps = DEFAULT_MICROSTEPS;
+unsigned int current = DEFAULT_CURRENT;
+unsigned int stallThresh = DEFAULT_STALL_THRESH;
+unsigned int stepsPerRev = DEFAULT_STEPS_PER_REV;
+volatile unsigned int controlType = DEFAULT_CONTROL_TYPE;
+unsigned int standstillMode = DEFAULT_STANDSTILL_MODE;
+bool mapDirection = DEFAULT_MAP_DIRECTION;
+float posSpeed = DEFAULT_POS_SPEED; // Max Speed (deg/sec) - human-friendly
+float accel = DEFAULT_ACCEL;    // Acceleration (deg/sec^2) - human-friendly
+float decel = DEFAULT_DECEL;    // Deceleration (deg/sec^2) - human-friendly
+unsigned int reportFreq1 = DEFAULT_REPORT_FREQ1;
+unsigned int reportFreq2 = DEFAULT_REPORT_FREQ2;
+bool enableOnBoot = DEFAULT_ENABLE_ON_BOOT;
+bool LED3V3Disable = DEFAULT_LED3V3_DISABLE;
+bool zeroEncAtBoot = DEFAULT_ZERO_ENC_BOOT;
 uint8_t storedAUXPayload[8] = {0, 0, 0, 0, 0, 0, 0, 0}; //AUX config (full CAN payload)
 
 // ---------------- Variables for storing current values for RTR reporting & others ---------------
 int64_t posSetpoint = 0;
 float velocitySetpoint = 0;
 bool driverEnabled = 0;
-bool ledState = 0;
+bool ledState = DEFAULT_LED1_STATE;
+bool ledState2 = DEFAULT_LED2_STATE;
 
 bool VbusState = 0;
 uint16_t AUX1Function = 0;
@@ -207,6 +225,7 @@ void handleAuxSerialInput();
 void sendCANFrame(unsigned long canId, uint8_t *payload, uint8_t len, bool rtr);
 void readSettings();
 void writeSettings();
+void resetToDefaults();
 void recalcMotionParams();
 float readInputVoltage();
 float readNTCTemperature();
@@ -224,6 +243,7 @@ void setup() {
     pinMode(STB, OUTPUT);
     digitalWrite(STB, LOW); // Enable CAN normal mode
     pinMode(LED1, OUTPUT);
+    pinMode(LED2, OUTPUT);
     pinMode(SW1, INPUT);
     pinMode(SW2, INPUT);
     pinMode(VBUS, INPUT);
@@ -252,6 +272,10 @@ void setup() {
 
     // read from EEPROM
     readSettings();
+
+    // Restore LED output states from EEPROM
+    digitalWrite(LED1, ledState);
+    digitalWrite(LED2, ledState2);
 
     recalcMotionParams(); // Calculate initial acceleration in steps/s^2 (Q16)
 
@@ -869,8 +893,9 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               }
               break;
   
-          case 6: // Emergency Stop
-              Serial.println("Executing Emergency Stop");
+          case 6: // Emergency Stop - any payload value (or none) triggers it. Re-enable with MsgType 5 afterwards.
+              Serial.println("EMERGENCY STOP triggered");
+              driverEnabled = false;
               stepper_driver.disable();
               portENTER_CRITICAL(&timerMux);
               motion.targetSpeed_q = 0;
@@ -892,18 +917,24 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
                   Serial.printf("StallGuard action set to: %d\n", sensorlessHomeMode);
               }
               break;
+
+          case 8: // Zero Encoder at boot (bool)
               if(len >= 1) {
                   zeroEncAtBoot = payload[0] != 0;
                   Serial.printf("Zero Enc at boot set to: %d\n", zeroEncAtBoot);
               }
               break;
   
-          case 9: // LED control
+          case 9: // LED State's (0: LED1 State, 1: LED2 State)
               if(len >= 1) {
                   ledState = payload[0] != 0;
-                  Serial.printf("LED Command: %d\n", ledState);
                   digitalWrite(LED1, ledState);
               }
+              if(len >= 2) {
+                  ledState2 = payload[1] != 0;
+                  digitalWrite(LED2, ledState2);
+              }
+              Serial.printf("LED Command: LED1=%d LED2=%d\n", ledState, ledState2);
               break;
   
           case 10: // Set Steps per rev (uint16)
@@ -1013,6 +1044,13 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               }
               break;
 
+          case 20: // Enabled/Disabled on Boot (bool)
+              if(len >= 1) {
+                  enableOnBoot = payload[0] != 0;
+                  Serial.printf("Enable on Boot set to: %d\n", enableOnBoot);
+              }
+              break;
+
           case 21: // Enable (bool)
               if(len >= 1) {
                   LED3V3Disable = payload[0] != 0;
@@ -1026,9 +1064,25 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               }
               break;
   
+          case 23: // Reset to Default
+              resetToDefaults();
+              break;
+
           case 24: // save config
               writeSettings();
               Serial.println("Config Saved");
+              break;
+
+          case 25: // Set Node ID (uint16)
+              if(len >= 2) {
+                  uint16_t newId = payload[0] | (payload[1] << 8);
+                  if (newId >= 1 && newId <= MAX_CAN_ID) {
+                      NODE_ID = newId;
+                      Serial.printf("Node ID set to: %u\n", NODE_ID);
+                  } else {
+                      Serial.printf("Invalid Node ID requested: %u (must be 1-%d)\n", newId, MAX_CAN_ID);
+                  }
+              }
               break;
 
           case 26: // AUX Connector settings
@@ -1164,9 +1218,11 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               canSendTelemetry(8, &zeroEncAtBoot, sizeof(zeroEncAtBoot));
               break;
 
-          case 9:
-              canSendTelemetry(9, &ledState, sizeof(ledState));
+          case 9: {
+              uint8_t ledPayload[2] = {(uint8_t)ledState, (uint8_t)ledState2};
+              canSendTelemetry(9, ledPayload, sizeof(ledPayload));
               break;
+          }
 
           case 10:
               canSendTelemetry(10, &stepsPerRev, sizeof(stepsPerRev));
@@ -1221,6 +1277,12 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
           case 21:
               canSendTelemetry(21, &LED3V3Disable, sizeof(LED3V3Disable));
               break;
+
+          case 25: {
+              uint16_t nid = NODE_ID;
+              canSendTelemetry(25, &nid, sizeof(nid));
+              break;
+          }
 
           case 26: {
               // Build response from storedAUXPayload (contains function codes),
@@ -1452,6 +1514,101 @@ void checkButtons() {
     }
 }
 
+// -------------------- Reset to Default (MsgType 23) --------------------
+// Restores all EEPROM-backed settings to the defaults defined in the CAN protocol doc,
+// applies them live by replaying each setting through executeCommand() (so driver
+// reconfiguration, motion recalculation, AUX teardown etc. all happen exactly as they
+// would for a normal command), then persists the result to EEPROM.
+//
+// NODE_ID is intentionally left untouched. Resetting it here would mean a broadcast
+// Reset to Default (NodeID 0) collapses every node on the bus down to the same ID.
+// Use MsgType 25 (Set Node ID) explicitly if you need to change it.
+void resetToDefaults() {
+    Serial.println("Resetting to default configuration...");
+
+    // Safety: stop the motor before changing motion-related parameters
+    stepper_driver.disable();
+    portENTER_CRITICAL(&timerMux);
+    motion.targetSpeed_q = 0;
+    motion.currentSpeed_q = 0;
+    isr_stepDelay_us = 0;
+    portEXIT_CRITICAL(&timerMux);
+    driverEnabled = false;
+
+    uint8_t p[8];
+
+    // MsgType 4 - Set Current (uint16, %)
+    memset(p, 0, 8); p[0] = DEFAULT_CURRENT & 0xFF; p[1] = (DEFAULT_CURRENT >> 8) & 0xFF;
+    executeCommand(NODE_ID, 4, p, 2, 0);
+
+    // MsgType 8 - Zero Encoder at Boot (bool)
+    memset(p, 0, 8); p[0] = DEFAULT_ZERO_ENC_BOOT;
+    executeCommand(NODE_ID, 8, p, 1, 0);
+
+    // MsgType 9 - LED States (0: LED1, 1: LED2)
+    memset(p, 0, 8); p[0] = DEFAULT_LED1_STATE; p[1] = DEFAULT_LED2_STATE;
+    executeCommand(NODE_ID, 9, p, 2, 0);
+
+    // MsgType 10 - Steps per Rev (uint16)
+    memset(p, 0, 8); p[0] = DEFAULT_STEPS_PER_REV & 0xFF; p[1] = (DEFAULT_STEPS_PER_REV >> 8) & 0xFF;
+    executeCommand(NODE_ID, 10, p, 2, 0);
+
+    // MsgType 11 - Microsteps (uint16)
+    memset(p, 0, 8); p[0] = DEFAULT_MICROSTEPS & 0xFF; p[1] = (DEFAULT_MICROSTEPS >> 8) & 0xFF;
+    executeCommand(NODE_ID, 11, p, 2, 0);
+
+    // MsgType 12 - Stallguard Threshold (int16)
+    memset(p, 0, 8);
+    { int16_t t = (int16_t)DEFAULT_STALL_THRESH; memcpy(p, &t, 2); }
+    executeCommand(NODE_ID, 12, p, 2, 0);
+
+    // MsgType 13 - Closed Loop Type (uint16)
+    memset(p, 0, 8); p[0] = DEFAULT_CONTROL_TYPE & 0xFF; p[1] = (DEFAULT_CONTROL_TYPE >> 8) & 0xFF;
+    executeCommand(NODE_ID, 13, p, 2, 0);
+
+    // MsgType 14 - Standstill Mode (uint16)
+    memset(p, 0, 8); p[0] = DEFAULT_STANDSTILL_MODE & 0xFF; p[1] = (DEFAULT_STANDSTILL_MODE >> 8) & 0xFF;
+    executeCommand(NODE_ID, 14, p, 2, 0);
+
+    // MsgType 15 - Map Direction (bool)
+    memset(p, 0, 8); p[0] = DEFAULT_MAP_DIRECTION;
+    executeCommand(NODE_ID, 15, p, 1, 0);
+
+    // MsgType 16 - Position Speed (float, deg/sec)
+    memset(p, 0, 8); memcpy(p, &DEFAULT_POS_SPEED, 4);
+    executeCommand(NODE_ID, 16, p, 4, 0);
+
+    // MsgType 17 - Acceleration (float, deg/sec^2)
+    memset(p, 0, 8); memcpy(p, &DEFAULT_ACCEL, 4);
+    executeCommand(NODE_ID, 17, p, 4, 0);
+
+    // MsgType 18 - Deceleration (float, deg/sec^2)
+    memset(p, 0, 8); memcpy(p, &DEFAULT_DECEL, 4);
+    executeCommand(NODE_ID, 18, p, 4, 0);
+
+    // MsgType 19 - Report Frequency (uint16 angle Hz, uint16 other Hz)
+    memset(p, 0, 8);
+    p[0] = DEFAULT_REPORT_FREQ1 & 0xFF; p[1] = (DEFAULT_REPORT_FREQ1 >> 8) & 0xFF;
+    p[2] = DEFAULT_REPORT_FREQ2 & 0xFF; p[3] = (DEFAULT_REPORT_FREQ2 >> 8) & 0xFF;
+    executeCommand(NODE_ID, 19, p, 4, 0);
+
+    // MsgType 20 - Enabled/Disabled on Boot (bool)
+    memset(p, 0, 8); p[0] = DEFAULT_ENABLE_ON_BOOT;
+    executeCommand(NODE_ID, 20, p, 1, 0);
+
+    // MsgType 21 - 3V3 LED Disable (bool)
+    memset(p, 0, 8); p[0] = DEFAULT_LED3V3_DISABLE;
+    executeCommand(NODE_ID, 21, p, 1, 0);
+
+    // MsgType 26 - AUX Connector (both pins disabled)
+    executeCommand(NODE_ID, 26, DEFAULT_AUX_PAYLOAD, 8, 0);
+
+    // Persist everything above to EEPROM
+    writeSettings();
+
+    Serial.println("Reset to defaults complete.");
+}
+
 //Read saved settings from EEPROM
 void readSettings(){
   preferences.begin("settings", false); //open the settings namespace
@@ -1470,6 +1627,8 @@ void readSettings(){
   reportFreq1 = preferences.getUInt("reportFreq1", reportFreq1);
   reportFreq2 = preferences.getUInt("reportFreq2", reportFreq2);
   enableOnBoot = preferences.getBool("enableOnBoot", enableOnBoot);
+  ledState = preferences.getBool("ledState", ledState);
+  ledState2 = preferences.getBool("ledState2", ledState2);
   LED3V3Disable = preferences.getBool("LED3V3Disable", LED3V3Disable);
   zeroEncAtBoot = preferences.getBool("zeroEncAtBoot", zeroEncAtBoot);
   preferences.getBytes("storedAUX", storedAUXPayload, 8);
@@ -1495,6 +1654,8 @@ void writeSettings(){
   preferences.putUInt("reportFreq1", reportFreq1);
   preferences.putUInt("reportFreq2", reportFreq2);
   preferences.putBool("enableOnBoot", enableOnBoot);
+  preferences.putBool("ledState", ledState);
+  preferences.putBool("ledState2", ledState2);
   preferences.putBool("LED3V3Disable", LED3V3Disable);
   preferences.putBool("zeroEncAtBoot", zeroEncAtBoot);
   preferences.putBytes("storedAUX", storedAUXPayload, 8);
