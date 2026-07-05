@@ -15,7 +15,7 @@
  * TODO:
  * - max out I2C speed?
  * - Give error for invalid commands
- * - Encoder calibration option?
+ * - Encoder calibration option for offset magnet?
  * - Add header file with CAN ID's instead of magic numbers!
  * - Better handle change of microsteps / accel / dir etc. better (update all values which rely on these when changed)
  * - When driver comes back online (VBUS rises) re-configure with current values better (as values may have been set when driver was not powered)

@@ -6,7 +6,7 @@ The format uses a single **11-bit CAN Standard ID** that encodes both the **Node
 
 An **RTR** (Remote Transmission Request) bit is used to request a current value. When a message is sent to a node with this bit set, the node will reply with the same ID, RTR of 0 and the corresponding payload. RTR can be used to request current command values (E.g setpoint or microsteps) as well as telemetry values (E.g Current Position, or Voltage)
 
-Setting the NODE_ID is done by holding down SW1 on boot for X seconds. E.g Holding down for 2 sec will make the LED flash twice and set the NODE_ID to 2. This is then saved in non-volatile memory.
+Setting the NODE_ID is done by holding down SW1 on boot for X seconds. E.g Holding down for 2 sec will make the LED flash twice and set the NODE_ID to 2. This is then saved in non-volatile memory straight away.
 
 All multi-byte values (int16, int32, int64, float, double) are sent in **little-endian** format.
 
