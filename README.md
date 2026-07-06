@@ -46,7 +46,7 @@ A web GUI allows easy configuration and debugging of a whole system over a singl
 
 The custom web GUI allows any board to be configured, controlled and monitored over a single USB Serial connection directly to the PCB with no software installs required. It also allows the connected board to be flashed with the most recent software.
 
-<img width="1696" height="1272" alt="GUI" src="https://github.com/user-attachments/assets/4bc0999e-9a1c-4a68-9058-b91453482c07" />
+<img width="2259" height="1301" alt="Screenshot 2026-07-06 205250" src="https://github.com/user-attachments/assets/58e332eb-70e8-4398-b68c-6d29b4a4deb5" />
 
 ---
 
