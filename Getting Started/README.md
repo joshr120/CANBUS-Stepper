@@ -89,12 +89,19 @@ It is viewable online at [thingsbyjosh.com/canbus_gui](https://thingsbyjosh.com/
 2. Open the Web GUI, press "Connect" and select your board. On windows machines this will come up as something like "USB JTAG/serial debug unit (COMxx)". You can also find the COM port number by opening device manager on your PC.
 
 <p float="left">
-  <img src="https://github.com/user-attachments/assets/b991ab38-7422-4ce3-9e48-f80628b457d9" width="53%" />
+  <img src="https://github.com/user-attachments/assets/c1ec2f50-f665-4980-9f79-b7a5914e0ac8" width="53%" />
   <img src="https://github.com/user-attachments/assets/e7d89f7a-5c0b-406d-8234-d92349b7a5e2" width="43%" /> 
 </p>
 
 3. View all discovered Nodes by pressing "x Nodes Found" on the bottom right. Click on a node to view it (or select the node ID with "TARGET NODE" on the top right). Setting the "TARGET NODE" to "0" will send the command to all nodes on the bus.
 4. Configure Node Device Settings by double clicking the value. After testing the change behaves as expected press "SAVE TO FLASH" to keep the values between power cycles.
+5. You can update your CANBUS Stepper to the latest software by using the UPDATE FIRMWARE button and automatically flashing the latest firmware pulled right from this GitHub:
+
+<p float="left">
+  <img src="https://github.com/user-attachments/assets/ec13c6c4-5593-4257-92d7-a738f161a5f4" width="60%" />
+  <img src="https://github.com/user-attachments/assets/ceb72661-ec54-4ed3-aaed-dc5fe9b0db12" width="28%" /> 
+</p>
+
 
 ## Closed Loop Control
 
@@ -123,7 +130,8 @@ To control a CANBUS Stepper node (or systems of nodes) over hardware serial, the
 
 Double click the "AUX Connector" setting, and select "Serial Control"
 
-<img width="625" height="396" alt="image" src="https://github.com/user-attachments/assets/398788b0-9e78-45b8-9e4f-32d16c716592" />
+<img width="606" height="406" alt="image" src="https://github.com/user-attachments/assets/4003c5b0-0bea-4c77-a773-f1d0a084e380" />
+
 
 Serial control is at 115200 Baud, format 8N1. Serial messages follow the same format as CAN packets. See the CAN Protocol document for more information.
 
