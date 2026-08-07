@@ -87,7 +87,7 @@ CanFrame rxFrame;
 CanFrame txFrame;
 
 // ---------------- FIRMWARE VERSION ----------------------------------------------------------
-float firmwareVersion = 0.08;
+float firmwareVersion = 0.10;
 // --------------------------------------------------------------------------------------------
 
 // ---------------- Stepper Driver ---------------
@@ -142,7 +142,7 @@ const unsigned int DEFAULT_MICROSTEPS      = 16;
 const unsigned int DEFAULT_CURRENT         = 30;      // %
 const unsigned int DEFAULT_STALL_THRESH    = 10;
 const unsigned int DEFAULT_STEPS_PER_REV   = 200;
-const unsigned int DEFAULT_CONTROL_TYPE    = 1;       // 0=Open Loop, 1=Closed Loop
+const unsigned int DEFAULT_CONTROL_TYPE    = 0;       // 0=Open Loop, 1=Closed Loop
 const unsigned int DEFAULT_STANDSTILL_MODE = 0;       // 0=Normal
 const bool         DEFAULT_MAP_DIRECTION   = 0;       // 0=Normal
 const float        DEFAULT_POS_SPEED       = 2000.0f; // deg/sec
@@ -443,45 +443,74 @@ void loop() {
         canSendTelemetry(37, &stallPayload, sizeof(stallPayload));  // msgType 37
     }
 
+    // -------------------- Closed-loop sync --------------------
+    if (posControl && controlType == 1) { // closed-loop position mode
+        // Read encoder
+        readEncoder();
+        // Convert encoder counts to microsteps
+        int64_t encoderSteps = (int64_t)total_encoder_counts * stepsPerRev * microsteps / 16384;
+        
+        // Update ISR current position from encoder
+        // CRITICAL: We only sync if there is a discrepancy to avoid jittering the ramp math
+        portENTER_CRITICAL(&timerMux);
+        int64_t diff = isr_currentPos - encoderSteps;
+        if (llabs(diff) > 10) { 
+             isr_currentPos = encoderSteps;
+        }
+        portEXIT_CRITICAL(&timerMux);
+    }
+
+    // In closed-loop mode the sync block above already read the encoder this
+    // iteration (needed for position sync), so don't duplicate that I2C
+    // transaction here. In open-loop mode nothing else reads the encoder, so
+    // sample it here — independent of reportFreq1 — to avoid missing wraparound
+    // events at high speed when the telemetry rate is slow.
+    if (!(posControl && controlType == 1)) {
+        readEncoder();
+    }
+    angle = ((double)total_encoder_counts) * 360.0 / 16384.0; // get degrees from encoder count
+
     // Send angle at chosen frequency
-    if (((millis() - lastFreq1) > 1000/reportFreq1) & (reportFreq1 != 0)){
-      readEncoder(); // may need to do this more often depending on report freq
-      angle = ((double)total_encoder_counts) * 360.0 / 16384.0; // get degrees from encoder count
-      canSendTelemetry(33, &angle, sizeof(angle));  // msgType 33
-      lastFreq1 = millis();
+    if ((reportFreq1 != 0)){
+        if ((millis() - lastFreq1) > 1000/reportFreq1){
+        canSendTelemetry(33, &angle, sizeof(angle));  // msgType 33
+        lastFreq1 = millis();
 
-      //send Current Velocity:
-      float currentVelocity = ((float)motion.currentSpeed_q / 65536.0f) * (360.0f / (stepsPerRev * microsteps)); //convert from Q16 int to deg/s float
-      canSendTelemetry(42, &currentVelocity, sizeof(currentVelocity));  // msgType 42
+        //send Current Velocity:
+        float currentVelocity = ((float)motion.currentSpeed_q / 65536.0f) * (360.0f / (stepsPerRev * microsteps)); //convert from Q16 int to deg/s float
+        canSendTelemetry(42, &currentVelocity, sizeof(currentVelocity));  // msgType 42
 
+        }
     }
 
     // Secondary periodic CAN outputs
-    if (((millis() - lastFreq2) > 1000/reportFreq2) & (reportFreq2 != 0)){
-      //Send voltage:
-      float voltage = readInputVoltage();
-      canSendTelemetry(34, &voltage, sizeof(voltage));  // msgType 34
+    if ((reportFreq2 != 0)){
+        if ((millis() - lastFreq2) > 1000/reportFreq2){
+        //Send voltage:
+        float voltage = readInputVoltage();
+        canSendTelemetry(34, &voltage, sizeof(voltage));  // msgType 34
 
-      //send NTC temp:
-      float NTCtemp = readNTCTemperature();
-      canSendTelemetry(38, &NTCtemp, sizeof(NTCtemp));  // msgType 38
+        //send NTC temp:
+        float NTCtemp = readNTCTemperature();
+        canSendTelemetry(38, &NTCtemp, sizeof(NTCtemp));  // msgType 38
 
-      //send ESP temp:
-      float ESPtemp = temperatureRead();
-      canSendTelemetry(41, &ESPtemp, sizeof(ESPtemp));  // msgType 41
+        //send ESP temp:
+        float ESPtemp = temperatureRead();
+        canSendTelemetry(41, &ESPtemp, sizeof(ESPtemp));  // msgType 41
 
-      //send Firmware version:
-      canSendTelemetry(40, &firmwareVersion, sizeof(firmwareVersion));  // msgType 40
+        //send Firmware version:
+        canSendTelemetry(40, &firmwareVersion, sizeof(firmwareVersion));  // msgType 40
 
-      // Send StallGuard value (SG_RESULT from TMC2209 — 10-bit, 0 = stall):
-      uint32_t sgValue = stepper_driver.getStallGuardResult();
-      canSendTelemetry(36, &sgValue, sizeof(sgValue));  // msgType 36
+        // Send StallGuard value (SG_RESULT from TMC2209 — 10-bit, 0 = stall):
+        uint32_t sgValue = stepper_driver.getStallGuardResult();
+        canSendTelemetry(36, &sgValue, sizeof(sgValue));  // msgType 36
 
-      // //send Current Velocity:
-      // float currentVelocity = ((float)motion.currentSpeed_q / 65536.0f) * (360.0f / (stepsPerRev * microsteps)); //convert from Q16 int to deg/s float
-      // canSendTelemetry(42, &currentVelocity, sizeof(currentVelocity));  // msgType 42
-      
-      lastFreq2 = millis();
+        // //send Current Velocity:
+        // float currentVelocity = ((float)motion.currentSpeed_q / 65536.0f) * (360.0f / (stepsPerRev * microsteps)); //convert from Q16 int to deg/s float
+        // canSendTelemetry(42, &currentVelocity, sizeof(currentVelocity));  // msgType 42
+        
+        lastFreq2 = millis();
+        }
     }
 
     // Handle CAN input
@@ -529,23 +558,6 @@ void loop() {
       VbusState = 1;
       Serial.println("Driver hardware enabled");
       
-    }
-
-    // -------------------- Closed-loop sync --------------------
-    if (posControl && controlType == 1) { // closed-loop position mode
-        // Read encoder
-        readEncoder();
-        // Convert encoder counts to microsteps
-        int64_t encoderSteps = (int64_t)total_encoder_counts * stepsPerRev * microsteps / 16384;
-        
-        // Update ISR current position from encoder
-        // CRITICAL: We only sync if there is a discrepancy to avoid jittering the ramp math
-        portENTER_CRITICAL(&timerMux);
-        int64_t diff = isr_currentPos - encoderSteps;
-        if (llabs(diff) > 10) { 
-             isr_currentPos = encoderSteps;
-        }
-        portEXIT_CRITICAL(&timerMux);
     }
 
     // Small yield to keep system responsive
