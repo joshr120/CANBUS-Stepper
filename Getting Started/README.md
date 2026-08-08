@@ -107,8 +107,9 @@ It is viewable online at [thingsbyjosh.com/canbus_gui](https://thingsbyjosh.com/
 
 Enable closed loop control in the web GUI
 
-1. Change the "Set Position (deg)" to 360 by double clicking the value.
-2. Under "LIVE TELEMETRY, the "Encoder Angle (deg)" should read 360 deg ± 1 deg. If this instead reads -360 set the "Map Direction" to 1. If it reads 180 degrees, set the "Steps per Rev" to 400.
+1. Under "LIVE TELEMETRY, take note of the "Encoder Angle (deg)" value.
+2. Change the "Set Position (deg)" to 360 by double clicking the value.
+3. The "Encoder Angle (deg)" should increase by 360 deg ± 1 deg. If this instead decreases by 360 set the "Map Direction" to 1. If it increases by 180 degrees, set the "Steps per Rev" to 400.
 
 ## Sensorless Homing
 
