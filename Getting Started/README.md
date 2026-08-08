@@ -133,8 +133,9 @@ Double click the "AUX Connector" setting, and select "Serial Control"
 
 <img width="606" height="406" alt="image" src="https://github.com/user-attachments/assets/4003c5b0-0bea-4c77-a773-f1d0a084e380" />
 
-
 Serial control is at 115200 Baud, format 8N1. Serial messages follow the same format as CAN packets. See the CAN Protocol document for more information.
+
+You will always still be able to use the USB serial connection as well.
 
 ## Custom CAN Messages
 
