@@ -1,6 +1,6 @@
 /*
  * Multi-Node CAN Stepper Example
- * THINGS BY JOSH 2025
+ * THINGS BY JOSH 2026
  * 
  * Each Node can receive commands over serial (USB) and CANBUS.
  * Messages received over USB serial will be forwarded onto the CAN bus (USB to CAN bridge).
@@ -22,7 +22,6 @@
  *     - (driver setup function!)
  * - Verify accel/decel/speed timing
  * - Add better input sanitation for other commands (range checks, e.g. as done for Set Node ID)
- * - Add RTR for telem as well (for individual value request)!
  * - Error if another node with same ID exists
  * - Rounding errors on deg -> steps -> deg (when reporting, current setpos != the actual set pos)
  * - Add relative move command!
@@ -87,7 +86,7 @@ CanFrame rxFrame;
 CanFrame txFrame;
 
 // ---------------- FIRMWARE VERSION ----------------------------------------------------------
-float firmwareVersion = 0.10;
+float firmwareVersion = 0.11;
 // --------------------------------------------------------------------------------------------
 
 // ---------------- Stepper Driver ---------------
@@ -1325,6 +1324,62 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               }
 
               canSendTelemetry(26, rtrPayload, 8);
+              break;
+          }
+
+          // ---- Telemetry values (individually requestable via RTR when periodic
+          // output is disabled or slower than needed). These mirror the payloads
+          // sent proactively in loop()/readEncoder(), but computed/read on demand. ----
+
+          case 33: // Angle (deg, double) — reuse the cached value refreshed every loop() iteration
+              canSendTelemetry(33, &angle, sizeof(angle));
+              break;
+
+          case 34: { // Input voltage (float)
+              float voltage = readInputVoltage();
+              canSendTelemetry(34, &voltage, sizeof(voltage));
+              break;
+          }
+
+          case 35: { // Button states (byte0=SW1, byte1=SW2, 1=pressed) — last debounced state
+              uint8_t payload[2];
+              payload[0] = lastSW1State ? 0 : 1; // LOW = pressed = 1
+              payload[1] = lastSW2State ? 0 : 1;
+              canSendTelemetry(35, payload, sizeof(payload));
+              break;
+          }
+
+          case 36: { // StallGuard result (uint32, 10-bit, 0 = stall)
+              uint32_t sgValue = stepper_driver.getStallGuardResult();
+              canSendTelemetry(36, &sgValue, sizeof(sgValue));
+              break;
+          }
+
+          case 37: { // Stall state — live DIAG pin read (1 = currently triggered)
+              uint8_t stallState = digitalRead(DIAG);
+              canSendTelemetry(37, &stallState, sizeof(stallState));
+              break;
+          }
+
+          case 38: { // NTC temperature (float, °C)
+              float NTCtemp = readNTCTemperature();
+              canSendTelemetry(38, &NTCtemp, sizeof(NTCtemp));
+              break;
+          }
+
+          case 40: // Firmware version (float)
+              canSendTelemetry(40, &firmwareVersion, sizeof(firmwareVersion));
+              break;
+
+          case 41: { // ESP internal temperature (float, °C)
+              float ESPtemp = temperatureRead();
+              canSendTelemetry(41, &ESPtemp, sizeof(ESPtemp));
+              break;
+          }
+
+          case 42: { // Current velocity (float, deg/sec)
+              float currentVelocity = ((float)motion.currentSpeed_q / 65536.0f) * (360.0f / (stepsPerRev * microsteps));
+              canSendTelemetry(42, &currentVelocity, sizeof(currentVelocity));
               break;
           }
 
