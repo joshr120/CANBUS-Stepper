@@ -8,7 +8,7 @@
  * 
  *
  * Architecture:
- * 1. Motion Task (1000Hz): Calculates ramping and sets target delay. For speed reasons this uses Q16 fixed-point math (no floats)
+ * 1. Motion Task (1000Hz): Calculates ramping and sets target delay. For speed reasons this uses Q-fixed integer math (no floats)
  * 2. Step ISR (One-Shot): Generates pulses based on target delay. Direct register writes for speed.
  *
  *
@@ -18,17 +18,15 @@
  * - Encoder calibration option for offset magnet?
  * - Add header file with CAN ID's instead of magic numbers!
  * - Better handle change of microsteps / accel / dir etc. better (update all values which rely on these when changed)
- * - When driver comes back online (VBUS rises) re-configure with current values better (as values may have been set when driver was not powered)
- *     - (driver setup function!)
+ * - [DONE v0.12] When driver comes back online (VBUS rises) re-configure with current values (driver setup function!)
+ *     - via configureDriver()/powerUpDriver()/powerDownDriver(), threshold DRIVER_VBUS_THRESHOLD (6V), called from setup() and loop()
  * - Verify accel/decel/speed timing
  * - Add better input sanitation for other commands (range checks, e.g. as done for Set Node ID)
  * - Error if another node with same ID exists
  * - Rounding errors on deg -> steps -> deg (when reporting, current setpos != the actual set pos)
  * - Add relative move command!
  * - Check EEPROM settings being overwritten on flash? (need to decide preferred bahaviour).
- * - Rest of CAN msg types
- *    - Fault codes
- * 
+ * - Error if too many steps per sec output!
  */
 
 
@@ -37,7 +35,9 @@
 #include <Wire.h>
 #include <Preferences.h>
 #include "esp_timer.h"
+#include "esp_rom_sys.h" // esp_rom_delay_us() -- tight busy-wait used in onStepTimer()
 #include <math.h> // used only in readNTCTemperature for log()
+#include <cstdint> // INT32_MAX, used by the MAX_STEP_RATE_HZ static_assert below
 
 Preferences preferences;
 
@@ -82,11 +82,40 @@ static const uint32_t DIR_MASK  = (1UL << DIR);
 
 const int MAX_CAN_ID = 31;
 
+// TMC2209 has no power when running from USB alone; only powered via
+// external VBUS. Above this threshold the driver is considered powered.
+const float DRIVER_VBUS_THRESHOLD = 6.0; // Volts
+
+// How long to hold the motor at standstill (motionHold) after the TMC2209
+// is (re-)enabled, letting current regulation settle before ramping.
+const unsigned long DRIVER_SETTLE_MS = 100;
+
+// ---------------- Fault Thresholds (see CAN Protocol.md "Fault Codes") ---------------
+const float PCB_TEMP_WARNING_C    = 100.0f; // PCB temperature (NTC, MsgType 38) warning threshold
+const float PCB_TEMP_SHUTDOWN_C   = 125.0f; // PCB temperature (NTC, MsgType 38) shutdown threshold
+const float PCB_TEMP_HYSTERESIS_C = 5.0f;   // fault clears once temp drops this far back below its threshold
+
+// ---------------- Fault Code (MsgType 39) bit definitions ---------------
+// Bitfield -- multiple faults can be active at once. See CAN Protocol.md.
+const uint16_t FAULT_PCB_OVERTEMP_WARNING  = (1 << 0); // PCB temp >= PCB_TEMP_WARNING_C
+const uint16_t FAULT_PCB_OVERTEMP_SHUTDOWN = (1 << 1); // PCB temp >= PCB_TEMP_SHUTDOWN_C
+
+// TMC2209-reported faults, read over UART via getStatus()/getGlobalStatus().
+// Report-only, mirrors the driver's live status each check.
+const uint16_t FAULT_DRIVER_OVERTEMP_WARNING          = (1 << 2); // driver die temp warning (independent of PCB NTC)
+const uint16_t FAULT_DRIVER_OVERTEMP_SHUTDOWN         = (1 << 3); // driver die temp shutdown (independent of PCB NTC)
+const uint16_t FAULT_DRIVER_SHORT_TO_GROUND_A         = (1 << 4); // short to ground, motor phase A
+const uint16_t FAULT_DRIVER_SHORT_TO_GROUND_B         = (1 << 5); // short to ground, motor phase B
+const uint16_t FAULT_DRIVER_LOW_SIDE_SHORT_A          = (1 << 6); // low-side short, motor phase A
+const uint16_t FAULT_DRIVER_LOW_SIDE_SHORT_B          = (1 << 7); // low-side short, motor phase B
+const uint16_t FAULT_DRIVER_CHARGE_PUMP_UNDERVOLTAGE  = (1 << 8); // charge pump undervoltage (uv_cp)
+// Bits 9-15 reserved for future fault types.
+
 CanFrame rxFrame;
 CanFrame txFrame;
 
 // ---------------- FIRMWARE VERSION ----------------------------------------------------------
-float firmwareVersion = 0.11;
+float firmwareVersion = 0.13;
 // --------------------------------------------------------------------------------------------
 
 // ---------------- Stepper Driver ---------------
@@ -99,22 +128,35 @@ int64_t total_encoder_counts = 0;
 double angle = 0.0; // degrees for telemetry (kept as float for telemetry payload)
 int encoder_offset = 0; //initial offset (if enables)
 
+// Closed-loop position sync deadband (see loop()), in microsteps. Only
+// resync isr_currentPos to the encoder once the discrepancy exceeds this.
+const int64_t CLOSED_LOOP_SYNC_DEADBAND_STEPS = 2;
+
 // ---------------- Scheduling ---------------
 unsigned long lastFreq1 = 0;
 unsigned long lastFreq2 = 0;
 
-// -------------------- Fixed-point (Q16) Motion Control Structures --------------------
-// Q16 fixed point helpers
-static const int32_t Q = 16;
-static const int32_t ONE_Q = 1 << Q;            // 65536
+// -------------------- Fixed-point (Q-scale) Motion Control Structures --------------------
+// Fixed point helpers. Ramp state (speed/accel) is stored as (value * ONE_Q)
+// in int32_t, so max representable speed = INT32_MAX / ONE_Q steps/sec.
+static const int32_t Q = 12;
+static const int32_t ONE_Q = 1 << Q;            // 4096
 static const int64_t ONE_Q64 = (int64_t)ONE_Q;
 
+// Maximum step rate (microsteps/sec) the ramp will ever target, in Position
+// or Velocity mode -- bench-measured ceiling of the step-generation path
+// (onStepTimer()) at 200 steps/rev / 256 and 128 microsteps.
+const int32_t MAX_STEP_RATE_HZ = 25000;
+const int32_t MAX_STEP_RATE_Q  = MAX_STEP_RATE_HZ * ONE_Q;
+static_assert((int64_t)MAX_STEP_RATE_HZ * (int64_t)ONE_Q <= INT32_MAX,
+              "MAX_STEP_RATE_HZ * ONE_Q overflows int32_t -- see comment above");
+
 struct MotionState {
-    // velocities/accels stored in Q16 fixed-point (steps/sec * 65536)
-    volatile int32_t currentSpeed_q;     // Q16 steps/sec
-    volatile int32_t targetSpeed_q;      // Q16 steps/sec
-    volatile int32_t accelSteps_q;       // Q16 steps/sec^2
-    volatile int32_t decelSteps_q;       // Q16 steps/sec^2
+    // velocities/accels stored in Q-fixed point (steps/sec * ONE_Q)
+    volatile int32_t currentSpeed_q;     // Q-fixed steps/sec
+    volatile int32_t targetSpeed_q;      // Q-fixed steps/sec
+    volatile int32_t accelSteps_q;       // Q-fixed steps/sec^2
+    volatile int32_t decelSteps_q;       // Q-fixed steps/sec^2
 
     volatile int64_t targetPos;          // Target Position in steps (for Position Mode)
     volatile bool isRunning;             // Is the step timer active?
@@ -128,15 +170,20 @@ bool posControl = 1; // 0 = Velocity Mode, 1 = Position Mode
 // ISR / Timer state (shared with ISR)
 volatile int64_t isr_currentPos = 0;   // current logical step count (in microsteps)
 volatile uint32_t isr_stepDelay_us = 0; // period between steps (0 = stopped)
-volatile bool isr_stepToggle = false;  // step line toggle state
 volatile bool isr_dirState = false;    // The specific direction pin state to write
 
+// STEP-high pulse width for onStepTimer(), in microseconds (TMC2209 needs ~100ns).
+const uint32_t STEP_PULSE_HIGH_US = 2;
+
 // Adjustable deadband for position mode (avoids oscillation at target)
-volatile int32_t isr_deadband = 2; 
+volatile int32_t isr_deadband = 2;
+
+// When true, onMotionTimer() forces the ramp target to zero regardless of
+// mode -- used to hold a genuine standstill (see configureDriver()).
+volatile bool motionHold = false;
 
 // ---------------- Default Values (per CAN Protocol doc) ---------------
-// Single source of truth for both the compiled-in startup defaults below
-// AND the "Reset to Default" command (MsgType 23) — keeps the two in sync.
+// Single source of truth for startup defaults and Reset to Default (MsgType 23).
 const unsigned int DEFAULT_MICROSTEPS      = 16;
 const unsigned int DEFAULT_CURRENT         = 30;      // %
 const unsigned int DEFAULT_STALL_THRESH    = 10;
@@ -205,6 +252,14 @@ volatile bool stallguardTriggered = false;
 //   4 = Instant stop and set as zero ONCE (auto-resets to mode 0 after triggered)
 uint8_t sensorlessHomeMode = 0;
 
+// ---------------- Fault Code (MsgType 39) ---------------
+// Current fault bitfield -- see FAULT_* bit definitions and checkFaults().
+uint16_t faultCode = 0;
+
+// True while a fault-triggered shutdown holds the driver disabled regardless
+// of driverEnabled; cleared automatically once checkFaults() clears the fault.
+bool faultShutdownActive = false;
+
 // ---------------- Timers and critical section ---------------
 static esp_timer_handle_t stepTimer = nullptr;
 static esp_timer_handle_t motionTimer = nullptr;
@@ -214,7 +269,8 @@ portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 void IRAM_ATTR onStepTimer(void* arg);   // One-Shot pulse generator
 void IRAM_ATTR onMotionTimer(void* arg); // 1000Hz Ramp Calculator
 void IRAM_ATTR onDiagInterrupt();        // DIAG pin ISR for stall detection
-void readEncoder(); 
+void readEncoder();
+int64_t encoderCountsToSteps(int64_t counts);
 void canSendTelemetry(uint8_t msgType, const void *data, uint8_t size);
 void forwardTelemetryToSerial(const CanFrame &frame);
 void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload, uint8_t len, uint8_t rtr);
@@ -225,10 +281,16 @@ void sendCANFrame(unsigned long canId, uint8_t *payload, uint8_t len, bool rtr);
 void readSettings();
 void writeSettings();
 void resetToDefaults();
+void haltMotionKeepTarget();
+void configureDriver();
+void powerUpDriver();
+void powerDownDriver();
 void recalcMotionParams();
+void rescaleStepCounts(unsigned int oldMicrosteps, unsigned int oldStepsPerRev);
 float readInputVoltage();
 float readNTCTemperature();
 void checkButtons();
+void checkFaults();
 void handleSerialInputFrom(Stream &port);
 
 // -------------------- Setup --------------------
@@ -268,6 +330,8 @@ void setup() {
 
     // start I2C
     Wire.begin(SDA, SCL);
+    // I2C clock for the MT6701 encoder (datasheet supports up to ~1MHz).
+    Wire.setClock(400000);
 
     // read from EEPROM
     readSettings();
@@ -276,7 +340,7 @@ void setup() {
     digitalWrite(LED1, ledState);
     digitalWrite(LED2, ledState2);
 
-    recalcMotionParams(); // Calculate initial acceleration in steps/s^2 (Q16)
+    recalcMotionParams(); // Calculate initial acceleration in steps/s^2 (Q-fixed)
 
     //apply AUX conenctor config based on EEPROM values:
     executeCommand(NODE_ID, 26, storedAUXPayload, 8, 0); //this is done by emualting a received command based on the CAN payload saved in EEPROM
@@ -325,28 +389,26 @@ void setup() {
         Serial.println("CAN bus failed!");
     }
 
-    // Stepper setup (using values from EEPROM)
-    stepper_driver.setup(serial_stream, SERIAL_BAUD_RATE, TMC2209::SERIAL_ADDRESS_0, TMC_RX, TMC_TX);
-    stepper_driver.setRunCurrent(current);
-    stepper_driver.setMicrostepsPerStep(microsteps);
-    stepper_driver.setStallGuardThreshold(stallThresh);
-    stepper_driver.enableAutomaticCurrentScaling();
-    stepper_driver.enableStealthChop(); // stealth chop needs to be enabled for stall detect
-    stepper_driver.setCoolStepDurationThreshold(5000); // TCOOLTHRS - gates StallGuard, prevents false triggers at standstill
-    //set standstill mode
-    if (standstillMode == 0){ stepper_driver.setStandstillMode(stepper_driver.NORMAL);}
-    else if (standstillMode == 1){ stepper_driver.setStandstillMode(stepper_driver.FREEWHEELING);}
-    else if (standstillMode == 2){ stepper_driver.setStandstillMode(stepper_driver.BRAKING);}
-    else if (standstillMode == 3){ stepper_driver.setStandstillMode(stepper_driver.STRONG_BRAKING);}
-    if (enableOnBoot){ 
-      stepper_driver.enable(); 
-      driverEnabled = 1;
-      } else { 
-        stepper_driver.disable(); 
-        driverEnabled = 0;
-        }
+    //ADC setup (must happen before the boot-time voltage check just below,
+    // so readInputVoltage() is reading with the correct calibrated attenuation)
+    analogSetPinAttenuation(VBUS, ADC_11db);
+    analogSetPinAttenuation(NTC, ADC_11db);
+
+    // Stepper setup (using values from EEPROM). driverEnabled reflects the
+    // desired state; actual UART config happens once VBUS is present.
+    driverEnabled = enableOnBoot;
+
+    if (readInputVoltage() >= DRIVER_VBUS_THRESHOLD) {
+        powerUpDriver(); // driver is already powered at boot - configure from scratch, then hardware-enable
+    } else {
+        digitalWrite(TMC_EN, HIGH); // stay hardware-disabled until VBUS is confirmed present (already HIGH, kept explicit here)
+        Serial.println("TMC2209 not powered at boot (VBUS below threshold) - will configure once external supply is detected");
+    }
 
     // --- TIMERS SETUP ---
+
+    // Both esp_timers use default ESP_TIMER_TASK dispatch: one shared background
+    // task services every esp_timer callback in the sketch.
 
     // 1. Motion Profile Timer (Periodic 1000Hz)
     // This calculates the S-curve/Trapezoid ramp
@@ -356,9 +418,9 @@ void setup() {
         .name = "motion_loop",
     };
     esp_timer_create(&motion_timer_args, &motionTimer);
-    
+
     // Start Motion Loop (1ms interval = 1000Hz)
-    esp_timer_start_periodic(motionTimer, 1000); 
+    esp_timer_start_periodic(motionTimer, 1000);
 
     // 2. Step Pulse Timer (One-Shot)
     // This fires once per step, toggles pin, and re-arms itself
@@ -368,10 +430,6 @@ void setup() {
         .name = "step_pulse",
     };
     esp_timer_create(&step_timer_args, &stepTimer);
-
-    //ADC setup
-    analogSetPinAttenuation(VBUS, ADC_11db);
-    analogSetPinAttenuation(NTC, ADC_11db);
 
     // Show current NODE_ID with fast blink
     for(int i = 0; i < NODE_ID; i++) {
@@ -446,24 +504,22 @@ void loop() {
     if (posControl && controlType == 1) { // closed-loop position mode
         // Read encoder
         readEncoder();
-        // Convert encoder counts to microsteps
-        int64_t encoderSteps = (int64_t)total_encoder_counts * stepsPerRev * microsteps / 16384;
-        
+        // Convert encoder counts to microsteps (rounded, not truncated -- see
+        // encoderCountsToSteps())
+        int64_t encoderSteps = encoderCountsToSteps(total_encoder_counts);
+
         // Update ISR current position from encoder
         // CRITICAL: We only sync if there is a discrepancy to avoid jittering the ramp math
         portENTER_CRITICAL(&timerMux);
         int64_t diff = isr_currentPos - encoderSteps;
-        if (llabs(diff) > 10) { 
+        if (llabs(diff) > CLOSED_LOOP_SYNC_DEADBAND_STEPS) {
              isr_currentPos = encoderSteps;
         }
         portEXIT_CRITICAL(&timerMux);
     }
 
-    // In closed-loop mode the sync block above already read the encoder this
-    // iteration (needed for position sync), so don't duplicate that I2C
-    // transaction here. In open-loop mode nothing else reads the encoder, so
-    // sample it here — independent of reportFreq1 — to avoid missing wraparound
-    // events at high speed when the telemetry rate is slow.
+    // Closed-loop mode already read the encoder above; open-loop mode reads it
+    // here instead, independent of reportFreq1.
     if (!(posControl && controlType == 1)) {
         readEncoder();
     }
@@ -476,7 +532,7 @@ void loop() {
         lastFreq1 = millis();
 
         //send Current Velocity:
-        float currentVelocity = ((float)motion.currentSpeed_q / 65536.0f) * (360.0f / (stepsPerRev * microsteps)); //convert from Q16 int to deg/s float
+        float currentVelocity = ((float)motion.currentSpeed_q / (float)ONE_Q) * (360.0f / (stepsPerRev * microsteps)); //convert from Q-fixed int to deg/s float
         canSendTelemetry(42, &currentVelocity, sizeof(currentVelocity));  // msgType 42
 
         }
@@ -493,6 +549,9 @@ void loop() {
         float NTCtemp = readNTCTemperature();
         canSendTelemetry(38, &NTCtemp, sizeof(NTCtemp));  // msgType 38
 
+        //send Fault Code (checkFaults() also sends this immediately on change; this is just the periodic re-send):
+        canSendTelemetry(39, &faultCode, sizeof(faultCode));  // msgType 39
+
         //send ESP temp:
         float ESPtemp = temperatureRead();
         canSendTelemetry(41, &ESPtemp, sizeof(ESPtemp));  // msgType 41
@@ -505,7 +564,7 @@ void loop() {
         canSendTelemetry(36, &sgValue, sizeof(sgValue));  // msgType 36
 
         // //send Current Velocity:
-        // float currentVelocity = ((float)motion.currentSpeed_q / 65536.0f) * (360.0f / (stepsPerRev * microsteps)); //convert from Q16 int to deg/s float
+        // float currentVelocity = ((float)motion.currentSpeed_q / (float)ONE_Q) * (360.0f / (stepsPerRev * microsteps)); //convert from Q-fixed int to deg/s float
         // canSendTelemetry(42, &currentVelocity, sizeof(currentVelocity));  // msgType 42
         
         lastFreq2 = millis();
@@ -530,33 +589,30 @@ void loop() {
     // Check for button state changes and send telemetry on change
     checkButtons();
 
-    //need to make this nicer
-    if ((readInputVoltage() < 4.0) && (VbusState == 1)){ //disable driver as VBUS gone below threshold
+    // Checks fault conditions and sends MsgType 39 on any change, independent
+    // of reportFreq2.
+    checkFaults();
+
+    // Monitors VBUS and brings the TMC2209 up/down with it -- see
+    // configureDriver()/powerUpDriver()/powerDownDriver().
+    float inputVoltage = readInputVoltage();
+    bool driverPowered = (inputVoltage >= DRIVER_VBUS_THRESHOLD);
+
+    if (!driverPowered) {
+      // Enforced every iteration: TMC_EN must stay high whenever VBUS is below threshold.
       digitalWrite(TMC_EN, HIGH);
-      VbusState = 0;
-      Serial.println("Driver hardware disabled");
-    } else if ((readInputVoltage() >= 4.0) && (VbusState == 0)) { //enable driver as VBUS has come back
-      delay(100); //give time to stablize
-      stepper_driver.setup(serial_stream, SERIAL_BAUD_RATE, TMC2209::SERIAL_ADDRESS_0, TMC_RX, TMC_TX);
-      stepper_driver.setRunCurrent(current);
-      stepper_driver.setMicrostepsPerStep(microsteps);
-      stepper_driver.setStallGuardThreshold(stallThresh);
-      stepper_driver.enableAutomaticCurrentScaling();
-      stepper_driver.enableStealthChop(); // stealth chop needs to be enabled for stall detect
-      stepper_driver.setCoolStepDurationThreshold(5000); // TCOOLTHRS
-      if (standstillMode == 0){ stepper_driver.setStandstillMode(stepper_driver.NORMAL);}
-      else if (standstillMode == 1){ stepper_driver.setStandstillMode(stepper_driver.FREEWHEELING);}
-      else if (standstillMode == 2){ stepper_driver.setStandstillMode(stepper_driver.BRAKING);}
-      else if (standstillMode == 3){ stepper_driver.setStandstillMode(stepper_driver.STRONG_BRAKING);}
-      if (driverEnabled){
-        stepper_driver.enable(); 
-      } else {
-        stepper_driver.disable();
+      if (VbusState == 1) {
+        powerDownDriver(); // VBUS has gone below threshold - handle the transition (halt motion, etc.)
       }
-      digitalWrite(TMC_EN, LOW);
-      VbusState = 1;
-      Serial.println("Driver hardware enabled");
-      
+    } else if (VbusState == 0) {
+      powerUpDriver(); // VBUS has come back - reconfigure from scratch, then hardware-enable
+    }
+
+    // Whenever the driver isn't powered AND enabled, pins reported/internal
+    // velocity to zero every iteration -- covers every disable path uniformly.
+    if (!(driverPowered && driverEnabled) || faultShutdownActive) {
+      motionHold = true;
+      haltMotionKeepTarget();
     }
 
     // Small yield to keep system responsive
@@ -571,18 +627,19 @@ void IRAM_ATTR onDiagInterrupt() {
 }
 
 // -------------------- Motion Control Loop (1000Hz) --------------------
-// Integer (Q16) implementation
+// Integer (Q-fixed) implementation
 void IRAM_ATTR onMotionTimer(void* arg) {
     // Use local copies outside critical section where possible
-    int32_t v_q;          // Q16 current speed
+    int32_t v_q;          // Q-fixed current speed
     int32_t accel_q;
     int32_t decel_q;
     int32_t targetSpeed_q;
-    int32_t local_posSpeed_steps_q; // Q16 max steps/sec
+    int32_t local_posSpeed_steps_q; // Q-fixed max steps/sec
     int64_t targetPos_local;
     bool local_posControl;
     bool local_mapDirection;
     int32_t local_deadband;
+    bool local_motionHold;
 
     // Copy minimal shared state
     portENTER_CRITICAL_ISR(&timerMux);
@@ -594,15 +651,21 @@ void IRAM_ATTR onMotionTimer(void* arg) {
     local_posControl = posControl;
     local_mapDirection = mapDirection;
     local_deadband = isr_deadband;
-    // compute maxV in Q16
+    local_motionHold = motionHold;
+    // compute maxV in Q-fixed
     float maxV_steps = (posSpeed / 360.0f) * (float)stepsPerRev * (float)microsteps;
     local_posSpeed_steps_q = (int32_t)roundf(maxV_steps * (float)ONE_Q);
+    if (local_posSpeed_steps_q > MAX_STEP_RATE_Q) local_posSpeed_steps_q = MAX_STEP_RATE_Q;
+    else if (local_posSpeed_steps_q < -MAX_STEP_RATE_Q) local_posSpeed_steps_q = -MAX_STEP_RATE_Q;
     portEXIT_CRITICAL_ISR(&timerMux);
 
     int32_t targetV_q = 0;
 
-    // --- 1. Determine Target Velocity (Q16) ---
-    if (local_posControl) {
+    // --- 1. Determine Target Velocity (Q-fixed) ---
+    if (local_motionHold) {
+        // Forced standstill (see motionHold) -- overrides both modes below.
+        targetV_q = 0;
+    } else if (local_posControl) {
         // position mode
         int64_t error = targetPos_local - isr_currentPos;
         int64_t absErr64 = llabs(error);
@@ -610,13 +673,11 @@ void IRAM_ATTR onMotionTimer(void* arg) {
         if (absErr64 <= local_deadband) {
             targetV_q = 0;
         } else {
-            // stopping distance = v^2 / (2*a), or 0 if decel is disabled (instant stop)
-            // When accel is 0 the motor will instantly jump to full speed, so use
-            // local_posSpeed_steps_q for the stop distance calculation rather than
-            // the current v_q (which may still be 0), to avoid overshoot oscillation.
+            // Stopping distance = v^2 / (2*a), or 0 if decel disabled. Uses the max
+            // configured speed (not v_q) so accel=0 doesn't cause overshoot.
             int32_t v_for_stopdist = (accel_q == 0) ? local_posSpeed_steps_q : abs(v_q);
             int64_t v2 = (int64_t)v_for_stopdist * (int64_t)v_for_stopdist; // Q32
-            int64_t denom_q = ((int64_t)decel_q << 1); // Q16
+            int64_t denom_q = ((int64_t)decel_q << 1); // Q-fixed
             int64_t stopDist = 0;
             if (decel_q != 0 && denom_q != 0) {
                 stopDist = v2 / (denom_q * ONE_Q);
@@ -633,11 +694,13 @@ void IRAM_ATTR onMotionTimer(void* arg) {
             }
         }
     } else {
-        // velocity mode: targetSpeed_q set by commands (already in Q16)
+        // Velocity mode target, clamped to MAX_STEP_RATE_Q like position mode.
         targetV_q = targetSpeed_q;
+        if (targetV_q > MAX_STEP_RATE_Q) targetV_q = MAX_STEP_RATE_Q;
+        else if (targetV_q < -MAX_STEP_RATE_Q) targetV_q = -MAX_STEP_RATE_Q;
     }
 
-    // --- 2. Apply Acceleration/Deceleration (Q16 arithmetic) ---
+    // --- 2. Apply Acceleration/Deceleration (Q-fixed arithmetic) ---
     // If accel or decel is 0, velocity snaps instantly to target (no ramping).
     // dt_q = ONE_Q / 1000 for 1 kHz loop
     const int32_t dt_q = ONE_Q / 1000; // 65
@@ -692,9 +755,11 @@ void IRAM_ATTR onMotionTimer(void* arg) {
     if (isr_stepDelay_us > 0 && !motion.isRunning) {
         // Serial.println("Kick Starting Step timer");
         motion.isRunning = true;
-        digitalWrite(DIR, isr_dirState); // Set Dir immediately
-        // First event: schedule rising edge after half-period (we emulate previous behavior)
-        // we rearm stepTimer with half delay (but ensure min 20us)
+        // Direct register write instead of digitalWrite(), matching onStepTimer().
+        if (isr_dirState) REG_WRITE(GPIO_OUT_W1TS_REG, DIR_MASK); // DIR = HIGH
+        else              REG_WRITE(GPIO_OUT_W1TC_REG, DIR_MASK); // DIR = LOW
+        // Schedule the first onStepTimer() call after half a period; onStepTimer()
+        // re-arms itself for subsequent steps.
         uint32_t first_delay = isr_stepDelay_us / 2;
         if (first_delay < 20) first_delay = 20;
         esp_timer_start_once(stepTimer, first_delay);
@@ -702,7 +767,8 @@ void IRAM_ATTR onMotionTimer(void* arg) {
 }
 
 // -------------------- Step ISR (One-Shot) --------------------
-// Fires when a step is due.
+// Fires when a step is due: emits one STEP pulse (rising edge, brief hold,
+// falling edge) and re-arms for the remaining period.
 void IRAM_ATTR onStepTimer(void* arg) {
     portENTER_CRITICAL_ISR(&timerMux);
 
@@ -712,35 +778,33 @@ void IRAM_ATTR onStepTimer(void* arg) {
         return;
     }
 
-    isr_stepToggle = !isr_stepToggle;
-
-    if (isr_stepToggle) {
-        // Rising edge: STEP = HIGH
-
-        // DIR pin
-        if (isr_dirState) {
-            REG_WRITE(GPIO_OUT_W1TS_REG, DIR_MASK);   // DIR = HIGH
-        } else {
-            REG_WRITE(GPIO_OUT_W1TC_REG, DIR_MASK);   // DIR = LOW
-        }
-
-        // STEP high
-        REG_WRITE(GPIO_OUT_W1TS_REG, STEP_MASK);
-
-        // logical position update
-        bool logicalUp = (isr_dirState == HIGH);
-        if (mapDirection) logicalUp = !logicalUp;
-
-        if (logicalUp) isr_currentPos++;
-        else           isr_currentPos--;
-
+    // DIR pin
+    if (isr_dirState) {
+        REG_WRITE(GPIO_OUT_W1TS_REG, DIR_MASK);   // DIR = HIGH
     } else {
-        // Falling edge: STEP = LOW
-        REG_WRITE(GPIO_OUT_W1TC_REG, STEP_MASK);
+        REG_WRITE(GPIO_OUT_W1TC_REG, DIR_MASK);   // DIR = LOW
     }
 
-    // Re-arm timer
-    uint64_t next_delay = isr_stepDelay_us / 2;
+    // Rising edge: STEP = HIGH
+    REG_WRITE(GPIO_OUT_W1TS_REG, STEP_MASK);
+
+    // logical position update
+    bool logicalUp = (isr_dirState == HIGH);
+    if (mapDirection) logicalUp = !logicalUp;
+
+    if (logicalUp) isr_currentPos++;
+    else           isr_currentPos--;
+
+    // Hold STEP high via a tight busy-wait.
+    esp_rom_delay_us(STEP_PULSE_HIGH_US);
+
+    // Falling edge: STEP = LOW
+    REG_WRITE(GPIO_OUT_W1TC_REG, STEP_MASK);
+
+    // Re-arm timer for the remainder of the step period
+    uint32_t next_delay = (isr_stepDelay_us > STEP_PULSE_HIGH_US)
+                               ? (isr_stepDelay_us - STEP_PULSE_HIGH_US)
+                               : 1;
     if (next_delay < 20) next_delay = 20;
 
     esp_timer_start_once(stepTimer, next_delay);
@@ -750,27 +814,130 @@ void IRAM_ATTR onStepTimer(void* arg) {
 
 // -------------------- Helpers --------------------
 void recalcMotionParams() {
-    // Converts user-friendly Deg/s^2 into Steps/s^2 and stores Q16
+    // Converts user-friendly Deg/s^2 into Steps/s^2 and stores Q-fixed
     float usteps = (float)microsteps;
     float revs = (float)stepsPerRev;
     float accel_steps = (accel / 360.0f) * revs * usteps;
     float decel_steps = (decel / 360.0f) * revs * usteps;
 
-    // store in Q16
+    // store in Q-fixed
     portENTER_CRITICAL(&timerMux);
     motion.accelSteps_q = (int32_t)roundf(accel_steps * (float)ONE_Q);
     motion.decelSteps_q = (int32_t)roundf(decel_steps * (float)ONE_Q);
-
-    // Also compute posSpeed->targetSpeed_q (max steps/sec Q16)
-    float maxV_steps = (posSpeed / 360.0f) * revs * usteps;
-    motion.targetSpeed_q = (int32_t)roundf(maxV_steps * (float)ONE_Q);
     portEXIT_CRITICAL(&timerMux);
+
+    // Does not touch motion.targetSpeed_q -- Position mode recomputes its own
+    // max speed from posSpeed every tick; targetSpeed_q is only used by Velocity mode.
+}
+
+// Rescales isr_currentPos/targetPos/posSetpoint and the ramp's speed state
+// when microsteps/stepsPerRev changes, preserving the physical
+// position/speed each one represents at the new resolution.
+void rescaleStepCounts(unsigned int oldMicrosteps, unsigned int oldStepsPerRev) {
+    if (oldMicrosteps == 0 || oldStepsPerRev == 0) return; // guard against div-by-zero (shouldn't happen)
+    if (oldMicrosteps == microsteps && oldStepsPerRev == stepsPerRev) return; // nothing actually changed
+
+    double ratio = ((double)stepsPerRev * (double)microsteps) /
+                   ((double)oldStepsPerRev * (double)oldMicrosteps);
+
+    portENTER_CRITICAL(&timerMux);
+    isr_currentPos = (int64_t)llround((double)isr_currentPos * ratio);
+    motion.targetPos = (int64_t)llround((double)motion.targetPos * ratio);
+    motion.currentSpeed_q = (int32_t)llround((double)motion.currentSpeed_q * ratio);
+    motion.targetSpeed_q = (int32_t)llround((double)motion.targetSpeed_q * ratio);
+    if (isr_stepDelay_us != 0) {
+        // Period is inversely proportional to steps/sec.
+        isr_stepDelay_us = (uint32_t)llround((double)isr_stepDelay_us / ratio);
+    }
+    portEXIT_CRITICAL(&timerMux);
+
+    posSetpoint = (int64_t)llround((double)posSetpoint * ratio);
+
+    Serial.printf("Rescaled step/velocity counts for new resolution (x%.6f)\n", ratio);
 }
 
 float readInputVoltage() {
     const float SCALE = (47.0 + 4.7) / 4.7;   // ≈ 11.0
     int mv = analogReadMilliVolts(VBUS);      // calibrated ADC voltage (mV)
     return (mv / 1000.0) * SCALE;             // return actual input voltag
+}
+
+// -------------------- TMC2209 Power / Configuration --------------------
+// Zeroes both currentSpeed_q and isr_stepDelay_us without touching
+// targetPos/targetSpeed_q, so the motor restarts from standstill and ramps
+// normally back up to any still-active setpoint.
+void haltMotionKeepTarget() {
+    portENTER_CRITICAL(&timerMux);
+    motion.currentSpeed_q = 0; // internal: ramp/accel-decel state
+    isr_stepDelay_us = 0;      // output: step pulse timing (0 = stopped)
+    portEXIT_CRITICAL(&timerMux);
+}
+
+// Configures the TMC2209 from scratch over UART while TMC_EN stays high
+// (disabled), then hardware-enables last so it never becomes live with
+// stale settings. Must only run while VBUS is present.
+void configureDriver() {
+    // Holds at forced standstill for the whole function; released at the end
+    // once the driver has settled.
+    motionHold = true;
+    haltMotionKeepTarget();
+
+    stepper_driver.setup(serial_stream, SERIAL_BAUD_RATE, TMC2209::SERIAL_ADDRESS_0, TMC_RX, TMC_TX);
+    stepper_driver.disable(); // force a known (off) chopper state before writing anything else
+    stepper_driver.setRunCurrent(current);
+    // Hold current matches run current, so holding torque doesn't fade at
+    // standstill in any standstill mode.
+    stepper_driver.setHoldCurrent(current);
+    stepper_driver.setMicrostepsPerStep(microsteps);
+    stepper_driver.setStallGuardThreshold(stallThresh);
+    stepper_driver.enableAutomaticCurrentScaling();
+    stepper_driver.enableStealthChop(); // stealth chop needs to be enabled for stall detect
+    stepper_driver.setCoolStepDurationThreshold(5000); // TCOOLTHRS - gates StallGuard, prevents false triggers at standstill
+
+    if (standstillMode == 0){ stepper_driver.setStandstillMode(stepper_driver.NORMAL);}
+    else if (standstillMode == 1){ stepper_driver.setStandstillMode(stepper_driver.FREEWHEELING);}
+    else if (standstillMode == 2){ stepper_driver.setStandstillMode(stepper_driver.BRAKING);}
+    else if (standstillMode == 3){ stepper_driver.setStandstillMode(stepper_driver.STRONG_BRAKING);}
+
+    // Re-zero speed immediately before enabling, in case the ramp climbed
+    // during the UART calls above.
+    haltMotionKeepTarget();
+
+    if (driverEnabled && !faultShutdownActive) {
+        stepper_driver.enable();
+        // Fully configured over UART, with the correct soft enable state
+        // applied -- now safe to physically energize the driver.
+        digitalWrite(TMC_EN, LOW);
+        // Let current regulation settle at standstill before releasing motionHold,
+        // so torque doesn't come up weak.
+        delay(DRIVER_SETTLE_MS);
+        motionHold = false; // now actually driving -- safe to resume ramping
+    } else {
+        stepper_driver.disable();
+        digitalWrite(TMC_EN, LOW);
+        // motionHold stays true if disabled or a shutdown fault is active, so
+        // nothing ramps/reports movement while genuinely stopped.
+    }
+}
+
+// Brings the TMC2209 up: waits for supplies to stabilize, then configures
+// it from scratch over UART.
+void powerUpDriver() {
+    delay(100); // let the driver's internal supplies stabilize
+    configureDriver();
+    VbusState = 1;
+    Serial.println("Driver configured from scratch and hardware enabled");
+}
+
+// Hardware-disables the TMC2209 immediately (no UART -- it has no power).
+// Halts the motion ramp and latches motionHold so software doesn't keep
+// "virtually" advancing while unpowered.
+void powerDownDriver() {
+    digitalWrite(TMC_EN, HIGH); // hardware disable
+    motionHold = true;
+    haltMotionKeepTarget();
+    VbusState = 0;
+    Serial.println("Driver hardware disabled");
 }
 
 float readNTCTemperature() {
@@ -813,6 +980,18 @@ void readEncoder() {
 
     prev_raw_counts = raw_counts;
     total_encoder_counts = raw_counts + (16384L * revolutions) - encoder_offset; //account for "Zero encoder at boot" here.
+}
+
+// Converts an encoder count to microsteps at the current resolution,
+// rounding to nearest instead of truncating.
+int64_t encoderCountsToSteps(int64_t counts) {
+    int64_t numerator = counts * (int64_t)stepsPerRev * (int64_t)microsteps;
+    const int64_t denominator = 16384;
+    if (numerator >= 0) {
+        return (numerator + denominator / 2) / denominator;
+    } else {
+        return (numerator - denominator / 2) / denominator;
+    }
 }
 
 void canSendTelemetry(uint8_t msgType, const void *data, uint8_t size) {
@@ -868,7 +1047,7 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
                   memcpy(&velocitySetpoint, payload, 4);
                   Serial.printf("Executing Set Velocity: %.2f deg/sec\n", velocitySetpoint);
                   
-                  // Convert to steps/sec for the motion loop then to Q16
+                  // Convert to steps/sec for the motion loop then to Q-fixed
                   float velSteps = (velocitySetpoint / 360.0f) * stepsPerRev * microsteps;
                   int32_t velSteps_q = (int32_t)roundf(velSteps * (float)ONE_Q);
   
@@ -883,6 +1062,7 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
                   current = payload[0] | (payload[1] << 8); // little endian
                   Serial.printf("Current set to: %u percent\n", current);
                   stepper_driver.setRunCurrent(current);
+                  stepper_driver.setHoldCurrent(current); // hold matches run -- see configureDriver()
               }
               break;
   
@@ -890,11 +1070,27 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               if(len >= 1) {
                   driverEnabled = payload[0] != 0;
                   Serial.printf("Executing Enable: %d\n", driverEnabled);
-                  if(driverEnabled) {
+                  if(driverEnabled && faultShutdownActive) {
+                      // Desired state recorded, but stays disabled while a PCB Over-Temp
+                      // Shutdown fault is active.
+                      Serial.println("Enable requested but PCB Over-Temp Shutdown is active; will resume once it clears");
+                      stepper_driver.disable();
+                      motionHold = true;
+                      haltMotionKeepTarget();
+                  } else if(driverEnabled) {
+                      // Re-enabling always starts from standstill so the motor ramps cleanly to
+                      // any already-active target.
+                      motionHold = true;
+                      haltMotionKeepTarget();
                       stepper_driver.enable();
+                      // Let current regulation settle before resuming ramp.
+                      delay(DRIVER_SETTLE_MS);
+                      motionHold = false;
                   } else {
                       stepper_driver.disable();
-                      // Stop motion
+                      // Disabling cancels any move and clears the target. motionHold also
+                      // latches true so Position mode doesn't keep driving toward a stale target.
+                      motionHold = true;
                       portENTER_CRITICAL(&timerMux);
                       motion.targetSpeed_q = 0;
                       motion.currentSpeed_q = 0;
@@ -903,11 +1099,12 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
                   }
               }
               break;
-  
+
           case 6: // Emergency Stop - any payload value (or none) triggers it. Re-enable with MsgType 5 afterwards.
               Serial.println("EMERGENCY STOP triggered");
               driverEnabled = false;
               stepper_driver.disable();
+              motionHold = true; // see case 5's disable branch for why this is needed too
               portENTER_CRITICAL(&timerMux);
               motion.targetSpeed_q = 0;
               motion.currentSpeed_q = 0;
@@ -950,17 +1147,25 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
   
           case 10: // Set Steps per rev (uint16)
               if(len >= 2) {
+                  unsigned int oldStepsPerRev = stepsPerRev;
                   stepsPerRev = payload[0] | (payload[1] << 8); // little endian
                   Serial.printf("Steps per rev set to: %u\n", stepsPerRev);
+                  // Preserve the physical position/target this change would
+                  // otherwise silently shift -- see rescaleStepCounts().
+                  rescaleStepCounts(microsteps, oldStepsPerRev);
                   recalcMotionParams();
               }
               break;
-  
+
           case 11: // microsteps (uint16)
               if(len >= 2) {
+                  unsigned int oldMicrosteps = microsteps;
                   microsteps = payload[0] | (payload[1] << 8); // little endian
                   Serial.printf("Microsteps set to: %u\n", microsteps);
                   stepper_driver.setMicrostepsPerStep(microsteps);
+                  // Preserve the physical position/target this change would
+                  // otherwise silently shift -- see rescaleStepCounts().
+                  rescaleStepCounts(oldMicrosteps, stepsPerRev);
                   recalcMotionParams();
               }
               break;
@@ -1003,7 +1208,7 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
                    // to prevent a sudden jump when direction logic flips
                    readEncoder();
                    portENTER_CRITICAL(&timerMux);
-                   int64_t encoderSteps = (int64_t)total_encoder_counts * stepsPerRev * microsteps / 16384;
+                   int64_t encoderSteps = encoderCountsToSteps(total_encoder_counts);
                    isr_currentPos = encoderSteps;
                    motion.targetPos = encoderSteps; // Cancel any current move
                    portEXIT_CRITICAL(&timerMux);
@@ -1014,7 +1219,7 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               if(len >= 4) {
                   memcpy(&posSpeed, payload, 4);
                   Serial.printf("Position speed updated to: %.2f deg/sec\n", posSpeed);
-                  // Update Q16 internal max speed
+                  // Update Q-fixed internal max speed
                   recalcMotionParams();
               }
               break;
@@ -1327,9 +1532,7 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               break;
           }
 
-          // ---- Telemetry values (individually requestable via RTR when periodic
-          // output is disabled or slower than needed). These mirror the payloads
-          // sent proactively in loop()/readEncoder(), but computed/read on demand. ----
+          // ---- Telemetry values requestable via RTR, computed/read on demand. ----
 
           case 33: // Angle (deg, double) — reuse the cached value refreshed every loop() iteration
               canSendTelemetry(33, &angle, sizeof(angle));
@@ -1367,6 +1570,10 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               break;
           }
 
+          case 39: // Fault Code (uint16 bitfield) -- see checkFaults() / FAULT_* definitions
+              canSendTelemetry(39, &faultCode, sizeof(faultCode));
+              break;
+
           case 40: // Firmware version (float)
               canSendTelemetry(40, &firmwareVersion, sizeof(firmwareVersion));
               break;
@@ -1378,7 +1585,7 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
           }
 
           case 42: { // Current velocity (float, deg/sec)
-              float currentVelocity = ((float)motion.currentSpeed_q / 65536.0f) * (360.0f / (stepsPerRev * microsteps));
+              float currentVelocity = ((float)motion.currentSpeed_q / (float)ONE_Q) * (360.0f / (stepsPerRev * microsteps));
               canSendTelemetry(42, &currentVelocity, sizeof(currentVelocity));
               break;
           }
@@ -1581,20 +1788,103 @@ void checkButtons() {
     }
 }
 
-// -------------------- Reset to Default (MsgType 23) --------------------
-// Restores all EEPROM-backed settings to the defaults defined in the CAN protocol doc,
-// applies them live by replaying each setting through executeCommand() (so driver
-// reconfiguration, motion recalculation, AUX teardown etc. all happen exactly as they
-// would for a normal command), then persists the result to EEPROM.
-//
-// NODE_ID is intentionally left untouched. Resetting it here would mean a broadcast
-// Reset to Default (NodeID 0) collapses every node on the bus down to the same ID.
-// Use MsgType 25 (Set Node ID) explicitly if you need to change it.
+// -------------------- Fault Monitoring (MsgType 39) --------------------
+// Updates the faultCode bitfield every iteration, sends MsgType 39 on any
+// change. PCB Over-Temp Shutdown also disables the driver and auto-resumes.
+void checkFaults() {
+    uint16_t newFaultCode = faultCode; // start from current state so hysteresis can hold bits set
+    float pcbTemp = readNTCTemperature();
+
+    // PCB over-temperature (NTC, same sensor as MsgType 38). Shutdown
+    // threshold is always above Warning threshold, so Shutdown implies
+    // Warning, but each bit is evaluated independently below.
+    if (pcbTemp >= PCB_TEMP_WARNING_C) {
+        newFaultCode |= FAULT_PCB_OVERTEMP_WARNING;
+    } else if (pcbTemp < (PCB_TEMP_WARNING_C - PCB_TEMP_HYSTERESIS_C)) {
+        newFaultCode &= ~FAULT_PCB_OVERTEMP_WARNING;
+    }
+
+    if (pcbTemp >= PCB_TEMP_SHUTDOWN_C) {
+        newFaultCode |= FAULT_PCB_OVERTEMP_SHUTDOWN;
+    } else if (pcbTemp < (PCB_TEMP_SHUTDOWN_C - PCB_TEMP_HYSTERESIS_C)) {
+        newFaultCode &= ~FAULT_PCB_OVERTEMP_SHUTDOWN;
+    }
+
+    // Mirrors the TMC2209's live status registers, report-only. Cleared when
+    // the driver isn't powered/answering rather than left stale.
+    const uint16_t DRIVER_FAULT_BITS = FAULT_DRIVER_OVERTEMP_WARNING | FAULT_DRIVER_OVERTEMP_SHUTDOWN |
+                                        FAULT_DRIVER_SHORT_TO_GROUND_A | FAULT_DRIVER_SHORT_TO_GROUND_B |
+                                        FAULT_DRIVER_LOW_SIDE_SHORT_A | FAULT_DRIVER_LOW_SIDE_SHORT_B |
+                                        FAULT_DRIVER_CHARGE_PUMP_UNDERVOLTAGE;
+    if (stepper_driver.isSetupAndCommunicating()) {
+        TMC2209::Status driverStatus = stepper_driver.getStatus();
+        TMC2209::GlobalStatus globalStatus = stepper_driver.getGlobalStatus();
+
+        if (driverStatus.over_temperature_warning) newFaultCode |= FAULT_DRIVER_OVERTEMP_WARNING;
+        else newFaultCode &= ~FAULT_DRIVER_OVERTEMP_WARNING;
+
+        if (driverStatus.over_temperature_shutdown) newFaultCode |= FAULT_DRIVER_OVERTEMP_SHUTDOWN;
+        else newFaultCode &= ~FAULT_DRIVER_OVERTEMP_SHUTDOWN;
+
+        if (driverStatus.short_to_ground_a) newFaultCode |= FAULT_DRIVER_SHORT_TO_GROUND_A;
+        else newFaultCode &= ~FAULT_DRIVER_SHORT_TO_GROUND_A;
+
+        if (driverStatus.short_to_ground_b) newFaultCode |= FAULT_DRIVER_SHORT_TO_GROUND_B;
+        else newFaultCode &= ~FAULT_DRIVER_SHORT_TO_GROUND_B;
+
+        if (driverStatus.low_side_short_a) newFaultCode |= FAULT_DRIVER_LOW_SIDE_SHORT_A;
+        else newFaultCode &= ~FAULT_DRIVER_LOW_SIDE_SHORT_A;
+
+        if (driverStatus.low_side_short_b) newFaultCode |= FAULT_DRIVER_LOW_SIDE_SHORT_B;
+        else newFaultCode &= ~FAULT_DRIVER_LOW_SIDE_SHORT_B;
+
+        if (globalStatus.uv_cp) newFaultCode |= FAULT_DRIVER_CHARGE_PUMP_UNDERVOLTAGE;
+        else newFaultCode &= ~FAULT_DRIVER_CHARGE_PUMP_UNDERVOLTAGE;
+    } else {
+        newFaultCode &= ~DRIVER_FAULT_BITS;
+    }
+
+    if (newFaultCode != faultCode) {
+        faultCode = newFaultCode;
+        Serial.printf("Fault code changed: 0x%04X (PCB temp %.1f C)\n", faultCode, pcbTemp);
+        canSendTelemetry(39, &faultCode, sizeof(faultCode)); // msgType 39, send immediately on change
+    }
+
+    // PCB Over-Temp Shutdown: disable the driver while the bit is set, and
+    // bring it back once it clears, restoring whatever driverEnabled already
+    // was (untouched here) rather than assuming the driver should re-enable.
+    bool shutdownFaultNow = (faultCode & FAULT_PCB_OVERTEMP_SHUTDOWN) != 0;
+    if (shutdownFaultNow && !faultShutdownActive) {
+        faultShutdownActive = true;
+        Serial.println("PCB Over-Temp Shutdown: disabling driver");
+        stepper_driver.disable();
+        motionHold = true; // see executeCommand() case 5's disable branch for why
+        haltMotionKeepTarget();
+    } else if (!shutdownFaultNow && faultShutdownActive) {
+        faultShutdownActive = false;
+        Serial.println("PCB Over-Temp Shutdown cleared");
+        if (driverEnabled && VbusState == 1) { // VbusState mirrors driverPowered -- see powerUpDriver()/powerDownDriver()
+            // Resume exactly like a fresh Enable command: hold at standstill,
+            // soft-enable, then let current regulation settle before ramping
+            // (see DRIVER_SETTLE_MS / configureDriver() for why this matters).
+            motionHold = true;
+            haltMotionKeepTarget();
+            stepper_driver.enable();
+            delay(DRIVER_SETTLE_MS);
+            motionHold = false;
+        }
+    }
+}
+
+// Restores EEPROM-backed settings to protocol defaults and replays each
+// through executeCommand() so side effects apply normally, then persists
+// to EEPROM. NODE_ID is left untouched.
 void resetToDefaults() {
     Serial.println("Resetting to default configuration...");
 
     // Safety: stop the motor before changing motion-related parameters
     stepper_driver.disable();
+    motionHold = true; // see executeCommand() case 5's disable branch for why
     portENTER_CRITICAL(&timerMux);
     motion.targetSpeed_q = 0;
     motion.currentSpeed_q = 0;

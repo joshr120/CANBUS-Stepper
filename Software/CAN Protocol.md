@@ -90,10 +90,35 @@ Encoder angle (deg) is constantly ouptput at the primary (1) set rate, the other
 | 36            | Stallguard Value     | 0–3: uint32 stallguard<br>4–7: optional      | Load / stall detection           | Yes (2)  | Yes     |
 | 37            | Stallguard Triggered | 0: 0 = no stall, 1 = stall<br>1–7: optional  | Boolean indicator, sent on stall interupt| No   | Yes     |
 | 38            | Board Temperature    | 0–3: float temperature (°C)<br>4–7: optional | NTC on the underside of the PCB  | Yes (2)  | Yes         |
-| 39            | Fault Code           | 0–1: uint16 fault code<br>2–7: optional      | Bitfield or enumerated faults    | Yes (2)  | Not Yet     |
+| 39            | Fault Code           | 0–1: uint16 fault code (bitfield)<br>2–7: optional | See Fault Codes section for bit definitions | Yes (2) + on change | Yes |
 | 40            | Software Version     | 0–3: float version <br>4–7: optional         | Node firmware version            | Yes (2)  | Yes         |
 | 41            | ESP32 Temperature    | 0–3: float temperature (°C)<br>4–7: optional | ESP32 internal temp sensor       | Yes (2)  | Yes         |
 | 42            | Current Velocity (deg/sec)| 0–3: float velocity <br>4–7: optional   | 32-bit float                     | Yes (2)  | Yes         |
+
+
+## Fault Codes (MsgType 39)
+
+Payload bytes 0-1 are a little-endian `uint16` bitfield, multiple bits can be set at once. Bytes 2-7 are unused. Sent periodically at the secondary (2) rate and immediately on any change.
+
+Most bits are report-only, the "Stops driver" column says which ones also disable the driver. A stopping fault resumes the driver automatically once it clears, no separate command needed. The PCB bits auto-clear with hysteresis (listed below); the TMC2209 driver bits mirror the driver's own live status directly.
+
+| Bit | Name                     | Set when                     | Clears when                  | Stops driver | Source                    |
+| --- | ------------------------ | ------------------------------ | ------------------------------- | ------------- | -------------------------- |
+| 0   | PCB Over-Temp Warning    | PCB temp >= 100°C            | PCB temp < 95°C              | No           | PCB Temperature (MsgType 38, NTC) |
+| 1   | PCB Over-Temp Shutdown   | PCB temp >= 125°C            | PCB temp < 120°C             | Yes, resumes once cleared | PCB Temperature (MsgType 38, NTC) |
+| 2   | Driver Over-Temp Warning | TMC2209 die temp >= 120°C (OTPW, factory-trimmed) | Condition clears              | No           | TMC2209 status (UART) |
+| 3   | Driver Over-Temp Shutdown| TMC2209 die temp >= 143°C (OT, factory-trimmed)   | Condition clears              | No, driver self-protects | TMC2209 status (UART) |
+| 4   | Short to Ground, Phase A | Short to ground on phase A   | Condition clears              | No, driver self-protects | TMC2209 status (UART) |
+| 5   | Short to Ground, Phase B | Short to ground on phase B   | Condition clears              | No, driver self-protects | TMC2209 status (UART) |
+| 6   | Low-Side Short, Phase A  | Low-side short on phase A    | Condition clears              | No, driver self-protects | TMC2209 status (UART) |
+| 7   | Low-Side Short, Phase B  | Low-side short on phase B    | Condition clears              | No, driver self-protects | TMC2209 status (UART) |
+| 8   | Charge Pump Undervoltage | Charge pump voltage too low  | Condition clears              | No, driver self-protects | TMC2209 status (UART) |
+| 9-15| Reserved                 | n/a                            | n/a                            | n/a           | Reserved for future faults |
+
+Bit 1 implies bit 0, since the PCB shutdown threshold is always above its warning threshold. Bits 2-8 come straight from the TMC2209's own status registers: the driver already protects itself in hardware for these (shutting down the affected output, reducing current, etc.), the node just reports what it sees. Bits 2 and 3's thresholds are set inside the TMC2209 itself (OTTRIM, factory OTP), not by this firmware, and could differ on a chip trimmed to a different OTTRIM option.
+
+### Example: Node 1, both PCB Over-Temp bits set
+CAN ID `(1 << 6) | 39 = 0x67`, RTR 0, payload `03 00 00 00 00 00 00 00`.
 
 
 ## Examples:
