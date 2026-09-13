@@ -18,15 +18,11 @@
  * - Encoder calibration option for offset magnet?
  * - Add header file with CAN ID's instead of magic numbers!
  * - Better handle change of microsteps / accel / dir etc. better (update all values which rely on these when changed)
- * - [DONE v0.12] When driver comes back online (VBUS rises) re-configure with current values (driver setup function!)
- *     - via configureDriver()/powerUpDriver()/powerDownDriver(), threshold DRIVER_VBUS_THRESHOLD (6V), called from setup() and loop()
  * - Verify accel/decel/speed timing
  * - Add better input sanitation for other commands (range checks, e.g. as done for Set Node ID)
- * - Error if another node with same ID exists
- * - Rounding errors on deg -> steps -> deg (when reporting, current setpos != the actual set pos)
- * - Add relative move command!
- * - Check EEPROM settings being overwritten on flash? (need to decide preferred bahaviour).
- * - Error if too many steps per sec output!
+ * - Fault if another node with same ID exists
+ * - Decide if EEPROM settings should be overwritten on flash?
+ * - Error if too many steps per sec output
  */
 
 
@@ -115,7 +111,7 @@ CanFrame rxFrame;
 CanFrame txFrame;
 
 // ---------------- FIRMWARE VERSION ----------------------------------------------------------
-float firmwareVersion = 0.13;
+float firmwareVersion = 0.14;
 // --------------------------------------------------------------------------------------------
 
 // ---------------- Stepper Driver ---------------
@@ -150,6 +146,11 @@ const int32_t MAX_STEP_RATE_HZ = 25000;
 const int32_t MAX_STEP_RATE_Q  = MAX_STEP_RATE_HZ * ONE_Q;
 static_assert((int64_t)MAX_STEP_RATE_HZ * (int64_t)ONE_Q <= INT32_MAX,
               "MAX_STEP_RATE_HZ * ONE_Q overflows int32_t -- see comment above");
+
+// Speed the ramp snaps to immediately when starting from a stop (see
+// onMotionTimer()), instead of ramping up from 0. Tune to taste.
+const int32_t MIN_START_SPEED_HZ = 30;
+const int32_t MIN_START_SPEED_Q  = MIN_START_SPEED_HZ * ONE_Q;
 
 struct MotionState {
     // velocities/accels stored in Q-fixed point (steps/sec * ONE_Q)
@@ -186,6 +187,7 @@ volatile bool motionHold = false;
 // Single source of truth for startup defaults and Reset to Default (MsgType 23).
 const unsigned int DEFAULT_MICROSTEPS      = 16;
 const unsigned int DEFAULT_CURRENT         = 30;      // %
+const unsigned int DEFAULT_HOLD_CURRENT    = 30;      // % (see MsgType 27)
 const unsigned int DEFAULT_STALL_THRESH    = 10;
 const unsigned int DEFAULT_STEPS_PER_REV   = 200;
 const unsigned int DEFAULT_CONTROL_TYPE    = 0;       // 0=Open Loop, 1=Closed Loop
@@ -208,6 +210,7 @@ unsigned int NODE_ID = 1;  // Change per node (0-31). NOT reset by MsgType 23 --
 
 unsigned int microsteps = DEFAULT_MICROSTEPS;
 unsigned int current = DEFAULT_CURRENT;
+unsigned int holdCurrent = DEFAULT_HOLD_CURRENT;
 unsigned int stallThresh = DEFAULT_STALL_THRESH;
 unsigned int stepsPerRev = DEFAULT_STEPS_PER_REV;
 volatile unsigned int controlType = DEFAULT_CONTROL_TYPE;
@@ -704,6 +707,7 @@ void IRAM_ATTR onMotionTimer(void* arg) {
     // If accel or decel is 0, velocity snaps instantly to target (no ramping).
     // dt_q = ONE_Q / 1000 for 1 kHz loop
     const int32_t dt_q = ONE_Q / 1000; // 65
+    bool wasStopped = (v_q == 0);
     if (v_q < targetV_q) {
         // speeding up; choose accel based on sign of v (if negative use decel to cross zero)
         int32_t chosen_a_q = (v_q >= 0) ? accel_q : decel_q;
@@ -723,6 +727,17 @@ void IRAM_ATTR onMotionTimer(void* arg) {
             v_q -= dv;
             if (v_q < targetV_q) v_q = targetV_q;
         }
+    }
+
+    // Delay-from-speed (below) is 1e6/v -- steep near v=0, so the ramp's
+    // first tiny increment out of a stop would land a disproportionately
+    // long first step. Snap straight to MIN_START_SPEED_Q instead, capped
+    // at the actual target so a deliberately slower target isn't overshot.
+    if (wasStopped && v_q != 0) {
+        int32_t targetAbs_q = (targetV_q >= 0) ? targetV_q : -targetV_q;
+        int32_t floor_q = (MIN_START_SPEED_Q < targetAbs_q) ? MIN_START_SPEED_Q : targetAbs_q;
+        if (v_q > 0 && v_q < floor_q) v_q = floor_q;
+        else if (v_q < 0 && v_q > -floor_q) v_q = -floor_q;
     }
 
     // Write back current speed
@@ -885,9 +900,7 @@ void configureDriver() {
     stepper_driver.setup(serial_stream, SERIAL_BAUD_RATE, TMC2209::SERIAL_ADDRESS_0, TMC_RX, TMC_TX);
     stepper_driver.disable(); // force a known (off) chopper state before writing anything else
     stepper_driver.setRunCurrent(current);
-    // Hold current matches run current, so holding torque doesn't fade at
-    // standstill in any standstill mode.
-    stepper_driver.setHoldCurrent(current);
+    stepper_driver.setHoldCurrent(holdCurrent); // see MsgType 27
     stepper_driver.setMicrostepsPerStep(microsteps);
     stepper_driver.setStallGuardThreshold(stallThresh);
     stepper_driver.enableAutomaticCurrentScaling();
@@ -1062,7 +1075,6 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
                   current = payload[0] | (payload[1] << 8); // little endian
                   Serial.printf("Current set to: %u percent\n", current);
                   stepper_driver.setRunCurrent(current);
-                  stepper_driver.setHoldCurrent(current); // hold matches run -- see configureDriver()
               }
               break;
   
@@ -1279,7 +1291,22 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
                   }
               }
               break;
-  
+
+          case 22: // Incremental Move (deg) (float) -- relative to current target
+              if(len >= 4) {
+                  posControl = 1; // position control mode; works the same in open or closed loop
+                  float deltaAngle;
+                  memcpy(&deltaAngle, payload, 4);
+                  int64_t deltaSteps = (int64_t)round((double)deltaAngle * (stepsPerRev * (double)microsteps / 360.0));
+                  posSetpoint += deltaSteps;
+                  Serial.printf("Executing Incremental Move: %.3f deg (%lld steps), new target %lld steps\n", deltaAngle, (long long)deltaSteps, (long long)posSetpoint);
+
+                  portENTER_CRITICAL(&timerMux);
+                  motion.targetPos = posSetpoint;
+                  portEXIT_CRITICAL(&timerMux);
+              }
+              break;
+
           case 23: // Reset to Default
               resetToDefaults();
               break;
@@ -1389,6 +1416,13 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               }
               break;
 
+          case 27: // Set Hold Current (uint16, %)
+              if(len >= 2) {
+                  holdCurrent = payload[0] | (payload[1] << 8); // little endian
+                  Serial.printf("Hold current set to: %u percent\n", holdCurrent);
+                  stepper_driver.setHoldCurrent(holdCurrent);
+              }
+              break;
 
           default:
               Serial.printf("Unknown command %d\n", msgType);
@@ -1531,6 +1565,10 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
               canSendTelemetry(26, rtrPayload, 8);
               break;
           }
+
+          case 27:
+              canSendTelemetry(27, &holdCurrent, sizeof(holdCurrent));
+              break;
 
           // ---- Telemetry values requestable via RTR, computed/read on demand. ----
 
@@ -1960,6 +1998,10 @@ void resetToDefaults() {
     // MsgType 26 - AUX Connector (both pins disabled)
     executeCommand(NODE_ID, 26, DEFAULT_AUX_PAYLOAD, 8, 0);
 
+    // MsgType 27 - Hold Current (uint16, %)
+    memset(p, 0, 8); p[0] = DEFAULT_HOLD_CURRENT & 0xFF; p[1] = (DEFAULT_HOLD_CURRENT >> 8) & 0xFF;
+    executeCommand(NODE_ID, 27, p, 2, 0);
+
     // Persist everything above to EEPROM
     writeSettings();
 
@@ -1973,6 +2015,7 @@ void readSettings(){
   NODE_ID = preferences.getUInt("NODE_ID", NODE_ID);
   microsteps = preferences.getUInt("microsteps", microsteps);
   current = preferences.getUInt("current", current);
+  holdCurrent = preferences.getUInt("holdCurrent", holdCurrent);
   stallThresh = preferences.getUInt("stallThresh", stallThresh);
   stepsPerRev = preferences.getUInt("stepsPerRev", stepsPerRev);
   controlType = preferences.getUInt("controlType", controlType);
@@ -2000,6 +2043,7 @@ void writeSettings(){
   preferences.putUInt("NODE_ID", NODE_ID);
   preferences.putUInt("microsteps", microsteps);
   preferences.putUInt("current", current);
+  preferences.putUInt("holdCurrent", holdCurrent);
   preferences.putUInt("stallThresh", stallThresh);
   preferences.putUInt("stepsPerRev", stepsPerRev);
   preferences.putUInt("controlType", controlType);

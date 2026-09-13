@@ -69,13 +69,14 @@ The MsgType field determines whether the frame is a **command** or **telemetry**
 | 19            | Report Frequency         | 0-1: uint16 Angle Deg (Hz) <br>2-3: uint16 Other (Hz) <br>4-7: optional| How often angle telemetry is sent (0 to disable)  | Yes    | Angle 10 (Hz) <br> Other 1 (Hz) | Yes         |
 | 20            | Enabled/Disabled on Boot | 0: 0 = disabled, 1 = enabled<br>1–7: optional              | Power-on state                                    | Yes              | 1 (enabled)     | Yes         |
 | 21            | 3V3 LED Disable          | 0: 0 = normal, 1 = disable<br>1–7: optional                | Disable 3.3V LED                                  | Yes              | 0 (enabled)     | Yes         |
-| 22            | TBC
+| 22            | Incremental Move (deg)   | 0–3: float delta angle (deg)<br>4–7: optional              | Moves the target by this many degrees relative to the current target position. Switches to Position control mode. Works the same in open or closed loop. | No | -               | Yes         |
 | 23            | Reset to Default         | 0–7: optional                                              | Restore node to default configuration             | No              | -               | Yes         |
 | 24            | Save Config              | 0–7: optional                                              | Save current configuration to non-volatile memory | No              | -               | Yes         |
 | 25            | Set Node ID              | 0–1: uint16 Node ID<br>2–7: optional                       | Set NODE ID of commanded ID <br> Save config will need to be called to new Node address for it to persist| -              | 1               | Yes         |
 | 26            | AUX Connector            | 0–1: AUX1 Function (uint16)<br>2–3: AUX1 Value (uint16)<br>4–5: AUX2 Function (uint16)<br>6–7: AUX2 Value (uint16) | Each pin configured independently. Serial mode (1) requires both pins set to function 1. See AUX Connector section. | Yes            | 0 (Disabled)    | Yes       |
+| 27            | Set Hold Current         | 0–1: uint16 hold current<br>2–7: optional                  | Motor current while stationary, percentage 0–100. Independent of MsgType 4 (run current). | Yes | 30 (%)          | Yes         |
 
-22, 26-31 for future expansion
+28-31 for future expansion
 
 
 # Telemetry Message Types (32-63)
