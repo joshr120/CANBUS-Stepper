@@ -4,13 +4,14 @@ Daisy Chain-able Closed Loop Stepper motor driver and controller. Made by Things
 Kits available now at [thingsbyjosh.com](https://thingsbyjosh.com/products/canbus-stepper)
 
 <p float="left">
-  <img src="https://github.com/user-attachments/assets/72307142-61fa-448f-8601-798ca4e54502" width="48%" /> 
-  <img src="https://github.com/user-attachments/assets/f4183227-76ab-452c-9f88-e1573f00b47e" width="48%" />
+  <img src="https://github.com/user-attachments/assets/fefb0139-d6a3-4d52-bf37-3dc5fb4ed737" width="48%" /> 
+  <img src="https://github.com/user-attachments/assets/8bb68218-ea98-4dee-93d4-5d94d039e8ba" width="48%" />
 </p>
 
+
 <p float="left">
-  <img src="https://github.com/user-attachments/assets/d43e1a59-d1aa-4397-b68c-2c2b7e41a4ac" width="48%" /> 
-  <img src="https://github.com/user-attachments/assets/8b3a8ec5-3be8-45ff-bc09-0e3eb4695a2f" width="48%" />
+  <img src="https://github.com/user-attachments/assets/30050754-ccb5-4073-8082-37bbb190f874" width="48%" /> 
+  <img src="https://github.com/user-attachments/assets/28f53542-6b5a-46ec-b893-50fd9634da21" width="48%" />
 </p>
 
 The CANBUS Stepper integrates all essential components required to drive a NEMA 17 stepper
