@@ -75,9 +75,9 @@ The full CAN protocol is available [here](https://github.com/joshr120/CANBUS-Ste
 
 ### USB:
 
-For USB Control & monitoring from a PC there is a full [python example script](https://github.com/joshr120/CANBUS-Stepper/blob/main/Software/Control%20Software/Python%20USB%20Serial%20Interface/python_example.py) (as well as the [Web GUI ](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/)for basic controls)
+For USB Control & monitoring from a PC there is the [Web GUI ](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/) as well as a full python example script for more custom applications.
 
-Python Exmaple Usage:
+Python Serial Example:
 
 ```
 bus = CANBus("COM3")
@@ -96,7 +96,34 @@ voltage = node1.get_voltage()
 
 bus.close()
 ```
-### Serial:
+
+### WiFi:
+
+Control and monitoring can be done wirelessly over WiFi (websockets). You can configure your network info on the [Web GUI ](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/) and then control and monitor it from there.
+
+There is also a python example for websocket control.
+
+Python Websocket Example:
+
+```
+bus = CANBus("canbus-stepper-1.local")   # hostname or IP of the WiFi-connected node
+
+node1 = bus.node(1)
+node1.set_position(360.0)
+node1.set_velocity(90.0)
+node1.enable()
+
+# Broadcast to all nodes
+bus.broadcast.estop()
+
+# Request telemetry
+angle = node1.get_angle()
+voltage = node1.get_voltage()
+
+bus.close()
+```
+
+### Serial (UART):
 Serial control is done through the AUX connector. This will need to be configured as a serial port through the [Web GUI](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/). Each board will act as a serial to CAN bridge so you can connect to one Node over serial and any others can be daisy chained with CAN.
 The protocol for this is defined in the [CAN protocol doc](https://github.com/joshr120/CANBUS-Stepper/blob/main/Software/CAN%20Protocol.md).
 Examples coming soon.
@@ -108,7 +135,7 @@ If your microcontroller has a CAN / TWAI peripheral then you need a tranceiver. 
 
 
 ### OnBoard:
-Alternatively you can also run the CANBUS Stepper with no external controller by running your code directly on the onbaord ESP32-S3 (programmable with the Arduino IDE). 
+Alternatively you can run the CANBUS Stepper with no external controller by running your code directly on the onbaord ESP32-S3 (programmable with the Arduino IDE). 
 You can use the CANBUS_Stepper_Node.ino as a starting point to get the pin definitions.
 
 ### ESPHome:
