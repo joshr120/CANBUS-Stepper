@@ -182,6 +182,44 @@ Node 1, set velocity to 100 deg/s:
 =`43 0 0000C84200000000`
 
 
+## WiFi / WebSocket Control (Optional)
+
+Each node can optionally join a WiFi network and expose the exact same `CAN_ID RTR Payload` line protocol
+described above over a WebSocket (port 81) instead of USB serial, so it can be controlled wirelessly.
+This is opt-in per node and only reachable from the single physical node you're plugged into over USB at
+the time -- no NodeID addressing is needed for the two commands below, since USB already addresses one
+specific board.
+
+WiFi credentials are provisioned over USB serial only. They are never sent over the CAN bus (which is
+shared by every node on the bus) and never over an existing WebSocket connection. Once set, they are
+saved to flash and the node automatically reconnects on every boot. The node's mDNS hostname is:
+
+`canbus-stepper-<NODE_ID>.local`
+
+e.g. Node 3 is reachable at `canbus-stepper-3.local`. The hostname updates automatically if the Node ID
+changes (MsgType 25).
+
+You can then connect to the node wirelessly from the web GUI or through a custom application. Only one node needs to be setup for WiFi / websockets and commands are passed onto the rest of the system over CAN.
+
+### Serial-only text commands (not CAN frames)
+
+| Command | Direction | Format | Notes |
+| --- | --- | --- | --- |
+| `WIFI_SET` | GUI → Node (serial only) | `WIFI_SET,<enabled 0\|1>,<ssid>,<password>` | SSID must not itself contain a comma. Password is everything after the second comma, so it may contain commas freely. An empty password for the *same* SSID keeps the previously stored password. Replies `WIFI_SET_OK` or `WIFI_SET_ERR <reason>`. |
+| `WIFI_STATUS?` | GUI → Node (serial or WebSocket) | `WIFI_STATUS?` | Read-only status query, no payload. |
+| `WIFI_STATUS` | Node → GUI (reply) | `WIFI_STATUS,<enabled 0\|1>,<connected 0\|1>,<hostname>,<ip>,<ssid>` | `ip` is blank when not connected. The password is never sent back. |
+
+### Example
+
+Enable WiFi on the node currently connected over USB, join "MyHomeNetwork":  
+=`WIFI_SET,1,MyHomeNetwork,SuperSecret123`
+→ `WIFI_SET_OK`
+
+Query status:  
+=`WIFI_STATUS?`
+→ `WIFI_STATUS,1,1,canbus-stepper-3.local,192.168.1.42,MyHomeNetwork`
+
+
 ## AUX Connector (Work in progress):
 
 The AUX connector can be setup for various different use cases.
