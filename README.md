@@ -69,13 +69,13 @@ Please refer to the [CAN protocol document](https://github.com/joshr120/CANBUS-S
 ##  Control Software: ##
 There are multiple ways to contol a CANBUS Stepper board.
 
-The default CAN node software allows a Node to be controlled over CAN, serial (UART) or USB from a seperate controller (Microcontroller or computer).
+The default CAN node software allows a Node to be controlled over CAN, serial (UART), USB or WiFi from a separate controller (Microcontroller or computer).
 
 The full CAN protocol is available [here](https://github.com/joshr120/CANBUS-Stepper/blob/main/Software/CAN%20Protocol.md).
 
 ### USB:
 
-For USB Control & monitoring from a PC there is the [Web GUI ](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/) as well as a full python example script for more custom applications.
+For USB Control & monitoring from a PC there is the [Web GUI ](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/) as well as a full [python example script](https://github.com/joshr120/CANBUS-Stepper/blob/main/Software/Control%20Software/Python%20USB%20Serial%20Interface/python_serial_example.py) for more custom applications.
 
 Python Serial Example:
 
@@ -101,7 +101,7 @@ bus.close()
 
 Control and monitoring can be done wirelessly over WiFi (websockets). You can configure your network info on the [Web GUI ](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/) and then control and monitor it from there.
 
-There is also a python example for websocket control.
+There is also a [python example for websocket control](https://github.com/joshr120/CANBUS-Stepper/blob/main/Software/Control%20Software/Python%20Websocket%20Interface/python_websocket_example.py).
 
 Python Websocket Example:
 
