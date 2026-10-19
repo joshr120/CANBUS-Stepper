@@ -2,17 +2,32 @@
 
 thingsbyjosh.com
 
-Python interface for the CANBUS Stepper Motor Controllers over USB serial.
+Python interface for the CANBUS Stepper Motor Controllers over WebSocket (WiFi),
+instead of USB serial. Same line protocol, same high-level API as
+python_example.py (Python USB Serial Interface) -- only the transport changed, so
+code written against one is almost a drop-in fit for the other.
+
+Requires one node already configured for WiFi via the Web GUI's "Configure WiFi"
+dialog (over USB, one time) -- this script only talks to the control WebSocket on
+port 81 once that node has joined your network; it can't provision credentials
+itself (WIFI_SET is USB-serial-only by design, see CAN Protocol.md). Any command
+sent to a node over this WebSocket is relayed onto the CAN bus exactly like a USB
+command would be, so every other node on the bus is reachable too, not just the
+one that's actually on WiFi.
+
+Install the WebSocket client library first (note the exact name -- "websocket"
+alone is a different, unrelated package):
+    pip install websocket-client
 
 Protocol overview:
   - 11-bit CAN Standard ID encodes NodeID (5 bits) and MsgType (6 bits)
   - CAN_ID = (NodeID << 6) | MsgType
-  - Serial frame: "<CAN_ID_hex> <RTR> <payload_16hex_chars>\n"
+  - WebSocket text frame: "<CAN_ID_hex> <RTR> <payload_16hex_chars>\n"
   - All multi-byte values are little-endian
   - NodeID 0 = broadcast to all nodes
 
 Example usage: (see bottom of page for actual code example)
-    bus = CANBus("COM3")
+    bus = CANBus("canbus-stepper-1.local")   # hostname or IP of the WiFi-connected node
 
     node1 = bus.node(1)
     node1.set_position(360.0)
@@ -30,12 +45,13 @@ Example usage: (see bottom of page for actual code example)
 """
 
 import struct
+import sys
 import threading
 import time
 from collections import defaultdict
 from typing import Callable, Dict, Optional
 
-import serial
+import websocket  # pip install websocket-client
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +59,17 @@ import serial
 # ---------------------------------------------------------------------------
 
 BROADCAST_NODE_ID = 0
+
+WS_PORT = 81  # matches WS_PORT in the firmware
+
+
+class CANBusConnectionError(Exception):
+    """
+    Raised when the WebSocket connection to a node can't be established --
+    bad hostname/IP, node offline/unreachable, or nothing listening on the
+    port. Always has a clean, human-readable message (see CANBus.__init__).
+    """
+    pass
 
 
 class MsgType:
@@ -105,7 +132,8 @@ class AuxFunction:
 
 
 # ---------------------------------------------------------------------------
-# Frame encoding / decoding
+# Frame encoding / decoding (identical to the USB serial version -- the line
+# protocol itself doesn't change between transports)
 # ---------------------------------------------------------------------------
 
 def build_can_id(node_id: int, msg_type: int) -> int:
@@ -117,21 +145,20 @@ def parse_can_id(can_id: int):
     return (can_id >> 6) & 0x1F, can_id & 0x3F
 
 
-def encode_frame(node_id: int, msg_type: int, rtr: int, payload: bytes) -> bytes:
+def encode_frame(node_id: int, msg_type: int, rtr: int, payload: bytes) -> str:
     """
-    Encode a serial frame.
-    Format: "<CAN_ID_hex> <RTR> <payload_16hex>\n"
+    Encode a WebSocket text frame.
+    Format: "<CAN_ID_hex> <RTR> <payload_16hex>"
     Payload is always zero-padded to 8 bytes.
     """
     can_id = build_can_id(node_id, msg_type)
     padded = payload.ljust(8, b'\x00')[:8]
-    frame = f"{can_id:X} {rtr} {padded.hex().upper()}\n"
-    return frame.encode()
+    return f"{can_id:X} {rtr} {padded.hex().upper()}"
 
 
 def decode_frame(line: str):
     """
-    Decode a serial frame string.
+    Decode a frame string.
     Returns (node_id, msg_type, rtr, payload_bytes) or None on error.
     """
     parts = line.strip().split()
@@ -148,21 +175,58 @@ def decode_frame(line: str):
 
 
 # ---------------------------------------------------------------------------
-# CANBus — serial connection + receive loop
+# CANBus — WebSocket connection + receive loop
 # ---------------------------------------------------------------------------
 
 class CANBus:
     """
-    Manages the serial connection to a CANBUS stepper network.
+    Manages the WebSocket connection to a CANBUS stepper network, over WiFi.
 
     Args:
-        port:     Serial port, e.g. "COM3" or "COM12"
-        baudrate: Serial baud rate (default 115200)
-        timeout:  Serial read timeout in seconds
+        host:          Hostname or IP of the WiFi-connected node, e.g.
+                        "canbus-stepper-1.local" or "192.168.1.42" (same value
+                        you'd type into the Web GUI's "Connect via WiFi" dialog).
+        port:           WebSocket port (default 81, matches the firmware).
+        connect_timeout: Seconds to wait for the WebSocket handshake to complete.
+
+    Raises:
+        CANBusConnectionError: if the host can't be resolved/reached, or the
+            WebSocket handshake otherwise fails -- with a plain-English reason
+            instead of a raw socket/websocket traceback.
     """
 
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.1):
-        self._ser = serial.Serial(port, baudrate=baudrate, timeout=timeout)
+    def __init__(self, host: str, port: int = WS_PORT, connect_timeout: float = 5.0):
+        url = f"ws://{host}:{port}/"
+        try:
+            self._ws = websocket.create_connection(url, timeout=connect_timeout)
+        except websocket.WebSocketAddressException as e:
+            raise CANBusConnectionError(
+                f'Could not resolve host "{host}" ({e}). '
+                f'If this is a "<name>.local" hostname: Windows does not resolve mDNS '
+                f'(.local) names by default the way macOS/Linux do -- either install '
+                f'Bonjour for Windows, or use the node\'s IP address instead (shown in '
+                f'the Web GUI, or your router\'s DHCP client list).'
+            ) from None
+        except (websocket.WebSocketTimeoutException, TimeoutError):
+            raise CANBusConnectionError(
+                f'Timed out connecting to {host}:{port} after {connect_timeout:g}s -- '
+                f'check the node is powered on and still connected to WiFi.'
+            ) from None
+        except ConnectionRefusedError:
+            raise CANBusConnectionError(
+                f'Connection refused by {host}:{port} -- the host answered, but nothing '
+                f'is listening on that port (check the port number; firmware default is {WS_PORT}).'
+            ) from None
+        except OSError as e:
+            raise CANBusConnectionError(
+                f'Could not connect to {host}:{port} ({e}). Check the host is correct '
+                f'and reachable on your network.'
+            ) from None
+        except websocket.WebSocketException as e:
+            raise CANBusConnectionError(
+                f'WebSocket handshake with {host}:{port} failed ({e}).'
+            ) from None
+
         self._lock = threading.Lock()
 
         # Registered callbacks: {(node_id, msg_type): [callable, ...]}
@@ -196,15 +260,18 @@ class CANBus:
 
     def close(self):
         self._running = False
+        try:
+            self._ws.close()
+        except Exception:
+            pass
         self._rx_thread.join(timeout=1.0)
-        self._ser.close()
 
     # -- Internal ------------------------------------------------------------
 
     def _send(self, node_id: int, msg_type: int, rtr: int, payload: bytes):
         frame = encode_frame(node_id, msg_type, rtr, payload)
         with self._lock:
-            self._ser.write(frame)
+            self._ws.send(frame)
 
     def _request(self, node_id: int, msg_type: int, timeout: float = 1.0):
         """Send an RTR request and block until the response arrives."""
@@ -226,36 +293,47 @@ class CANBus:
 
         return result.get("payload")
 
+    def _handle_line(self, line: str):
+        parsed = decode_frame(line)
+        if parsed is None:
+            return
+        node_id, msg_type, rtr, payload = parsed
+
+        # Resolve any pending RTR request
+        key = (node_id, msg_type)
+        with self._pending_lock:
+            pending = self._pending.pop(key, None)
+        if pending:
+            pending["result"]["payload"] = payload
+            pending["event"].set()
+
+        # Fire registered callbacks
+        for cb in self._callbacks.get(key, []):
+            try:
+                cb(node_id, msg_type, payload)
+            except Exception as e:
+                print(f"[canbus] callback error: {e}")
+
     def _rx_loop(self):
         while self._running:
             try:
-                raw = self._ser.readline()
+                raw = self._ws.recv()
                 if not raw:
                     continue
-                line = raw.decode(errors="replace")
-                parsed = decode_frame(line)
-                if parsed is None:
-                    continue
-
-                node_id, msg_type, rtr, payload = parsed
-
-                # Resolve any pending RTR request
-                key = (node_id, msg_type)
-                with self._pending_lock:
-                    pending = self._pending.pop(key, None)
-                if pending:
-                    pending["result"]["payload"] = payload
-                    pending["event"].set()
-
-                # Fire registered callbacks
-                for cb in self._callbacks.get(key, []):
-                    try:
-                        cb(node_id, msg_type, payload)
-                    except Exception as e:
-                        print(f"[canbus] callback error: {e}")
-
+                # Each queued telemetry line is sent as its own WebSocket text frame
+                # (see broadcastLineToWS() in the firmware), but split on '\n' anyway
+                # in case more than one line ever arrives in a single frame -- the
+                # Web GUI does the same defensively.
+                for line in raw.split("\n"):
+                    line = line.strip()
+                    if line:
+                        self._handle_line(line)
+            except websocket.WebSocketConnectionClosedException:
+                break
             except Exception:
-                pass
+                if self._running:
+                    continue
+                break
 
     def __enter__(self):
         return self
@@ -264,8 +342,27 @@ class CANBus:
         self.close()
 
 
+def connect(host: str, port: int = WS_PORT, connect_timeout: float = 5.0) -> "CANBus":
+    """
+    Convenience wrapper around CANBus() for scripts/CLIs: on a connection
+    failure, prints a clean one-line reason (instead of a traceback) and
+    exits the process, so callers (like the example below) don't need their
+    own try/except just to stay out of a traceback.
+
+    Use CANBus(...) directly instead if you want to catch
+    CANBusConnectionError yourself (e.g. to retry).
+    """
+    try:
+        return CANBus(host, port=port, connect_timeout=connect_timeout)
+    except CANBusConnectionError as e:
+        print(f"Could not connect to {host}: {e}")
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # StepperNode — per-node command and telemetry API
+# (identical to the USB serial version -- fully transport-agnostic, it only
+# ever calls back into CANBus._send()/_request())
 # ---------------------------------------------------------------------------
 
 class StepperNode:
@@ -501,11 +598,10 @@ class StepperNode:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    PORT = "COM374"  # adjust to your COM port (check Device Manager)
+    HOST = "canbus-stepper-1.local"  # adjust to your node's hostname or IP
 
-    with CANBus(PORT) as bus:
+    with connect(HOST) as bus:
         node1 = bus.node(1)
-        node2 = bus.node(2)
 
         # Register a callback for continuous angle telemetry from node 1
         def on_angle(node_id, msg_type, payload):
