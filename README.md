@@ -85,30 +85,26 @@ Example Usage:
 
 ```
 from canbus_stepper import CANBus
-```
-USB:
-```
-with CANBus.serial("COM4") as bus:
-```
 
-WiFI
-```
+# USB serial
+with CANBus.serial("COM3") as bus:
+    node1 = bus.node(1)
+    node1.set_acceleration(720.0)
+    node1.set_deceleration(720.0)
+    node1.set_position_speed(360.0)
+    node1.enable()
+    node1.set_position(180.0)
+
+# WiFi - the node must already be joined to your network (setup via the Web GUI) 
 with CANBus.websocket("canbus-stepper-1.local") as bus:
-```
+    node1 = bus.node(1)
+    node1.set_position(180.0)
 
-```
-  node1 = bus.node(1)
-  node1.set_position(360.0)
-  node1.set_velocity(90.0)
-  node1.enable()
-  
-  # Broadcast to all nodes
-  bus.broadcast.estop()
-  
-  # Request telemetry
-  angle = node1.get_angle()
-  voltage = node1.get_voltage()
+    angle = node1.get_angle()
+    voltage = node1.get_voltage()
 
+    # Broadcast to every node on the bus
+    bus.broadcast.estop()
 ```
 
 See [full examples](https://github.com/joshr120/CANBUS-Stepper/tree/main/Software/Control%20Software/Python%20Interface) for more details.
