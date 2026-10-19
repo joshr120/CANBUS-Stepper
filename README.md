@@ -111,7 +111,7 @@ with CANBus.websocket("canbus-stepper-1.local") as bus:
 
 ```
 
-See full examples for more details.
+See [full examples](https://github.com/joshr120/CANBUS-Stepper/tree/main/Software/Control%20Software/Python%20Interface) for more details.
 
 ### Serial (UART):
 Serial control is done through the AUX connector. This will need to be configured as a serial port through the [Web GUI](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/). Each board will act as a serial to CAN bridge so you can connect to one Node over serial and any others can be daisy chained with CAN.
