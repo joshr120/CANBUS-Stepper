@@ -43,9 +43,9 @@ A web GUI allows easy configuration and debugging of a whole system over a singl
 
 ## Web GUI: ##
 
-[Click here to visit](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/)
+[Click here to visit](https://thingsbyjosh.com/canbus_gui)
 
-The custom web GUI allows any board to be configured, controlled and monitored over a single USB Serial connection directly to the PCB with no software installs required. It also allows the connected board to be flashed with the most recent software.
+The custom web GUI allows a system to be configured, controlled and monitored over a single USB connection directly to the PCB (or wirelessly with WiFi) with no software installs required. It also allows firmware to be flashed directly from the web GUI over USB.
 
 <img width="2259" height="1301" alt="Screenshot 2026-07-06 205250" src="https://github.com/user-attachments/assets/58e332eb-70e8-4398-b68c-6d29b4a4deb5" />
 
@@ -73,55 +73,45 @@ The default CAN node software allows a Node to be controlled over CAN, serial (U
 
 The full CAN protocol is available [here](https://github.com/joshr120/CANBUS-Stepper/blob/main/Software/CAN%20Protocol.md).
 
-### USB:
+### Web GUI
 
-For USB Control & monitoring from a PC there is the [Web GUI ](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/) as well as a full [python example script](https://github.com/joshr120/CANBUS-Stepper/blob/main/Software/Control%20Software/Python%20USB%20Serial%20Interface/python_serial_example.py) for more custom applications.
+The web GUI allows you to setup and control nodes, it can communicate via USB (webserial) or WiFi. The motion studio allows you to string together a basic set of movements.
 
-Python Serial Example:
+### Python:
 
-```
-bus = CANBus("COM3")
+For more advanced use cases there is a [python library](https://pypi.org/project/canbus-stepper/) which allows you to easily control a system over either USB or WiFi.
 
-node1 = bus.node(1)
-node1.set_position(360.0)
-node1.set_velocity(90.0)
-node1.enable()
-
-# Broadcast to all nodes
-bus.broadcast.estop()
-
-# Request telemetry
-angle = node1.get_angle()
-voltage = node1.get_voltage()
-
-bus.close()
-```
-
-### WiFi:
-
-Control and monitoring can be done wirelessly over WiFi (websockets). You can configure your network info on the [Web GUI ](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/) and then control and monitor it from there.
-
-There is also a [python example for websocket control](https://github.com/joshr120/CANBUS-Stepper/blob/main/Software/Control%20Software/Python%20Websocket%20Interface/python_websocket_example.py).
-
-Python Websocket Example:
+Example Usage:
 
 ```
-bus = CANBus("canbus-stepper-1.local")   # hostname or IP of the WiFi-connected node
-
-node1 = bus.node(1)
-node1.set_position(360.0)
-node1.set_velocity(90.0)
-node1.enable()
-
-# Broadcast to all nodes
-bus.broadcast.estop()
-
-# Request telemetry
-angle = node1.get_angle()
-voltage = node1.get_voltage()
-
-bus.close()
+from canbus_stepper import CANBus
 ```
+USB:
+```
+with CANBus.serial("COM4") as bus:
+```
+
+WiFI
+```
+with CANBus.websocket("canbus-stepper-1.local") as bus:
+```
+
+```
+  node1 = bus.node(1)
+  node1.set_position(360.0)
+  node1.set_velocity(90.0)
+  node1.enable()
+  
+  # Broadcast to all nodes
+  bus.broadcast.estop()
+  
+  # Request telemetry
+  angle = node1.get_angle()
+  voltage = node1.get_voltage()
+
+```
+
+See full examples for more details.
 
 ### Serial (UART):
 Serial control is done through the AUX connector. This will need to be configured as a serial port through the [Web GUI](https://joshr120.github.io/CANBUS_Stepper_Web_GUI/). Each board will act as a serial to CAN bridge so you can connect to one Node over serial and any others can be daisy chained with CAN.
