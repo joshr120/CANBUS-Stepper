@@ -8,34 +8,22 @@
  * 
  *
  * Architecture:
- * 1. Motion Task (1000Hz): Calculates ramping and sets target delay. For speed reasons this uses Q-fixed integer math (no floats)
- * 2. Step ISR (One-Shot): Generates pulses based on target delay. Direct register writes for speed.
- *    Both of the above run as genuine hardware timer interrupts (timerBegin()/timerAttachInterrupt(),
- *    NOT esp_timer), explicitly tied to Core 1 -- see "TIMERS SETUP" in setup() for why this
- *    matters: a real interrupt preempts task-level code (including WiFi's own high-priority
- *    internal task) almost unconditionally, unlike esp_timer's background dispatch task, whose
- *    CPU core isn't fixed and could get delayed by WiFi activity regardless of core pinning
- *    anywhere else in the sketch.
- * 3. WiFi / WebSocket (optional, port 81): once provisioned over USB serial (WIFI_SET command), the node
- *    joins the given network and exposes the exact same command/telemetry line protocol over a WebSocket,
- *    so the Web GUI can control this one node wirelessly instead of over USB. Credentials are only ever
- *    sent over the USB link (never the CAN bus, which is shared by every node) and persist in flash, so
- *    the node reconnects automatically on every boot. Hostname is canbus-stepper-<NODE_ID>.local (mDNS).
- *    Requires the "WebSockets" library by Markus Sattler (Links2004) - Arduino Library Manager -
+ * 1. Motion Task (1000Hz): ramp calculation, Q-fixed integer math (no floats, for speed).
+ * 2. Step ISR (One-Shot): generates pulses from the target delay via direct register writes.
+ *    Both run as real hardware timer interrupts (timerBegin/timerAttachInterrupt, not
+ *    esp_timer), tied to Core 1 -- see "TIMERS SETUP" in setup().
+ * 3. WiFi / WebSocket (optional, port 81): once provisioned over USB serial (WIFI_SET), the
+ *    node joins the network and exposes the same command/telemetry protocol over a WebSocket,
+ *    so the Web GUI can control it wirelessly instead of over USB. Credentials only ever
+ *    travel over USB (never CAN) and persist in flash. Hostname: canbus-stepper-<NODE_ID>.local
+ *    Needs the "WebSockets" library by Markus Sattler (Links2004), Arduino Library Manager --
  *    https://github.com/Links2004/arduinoWebSockets
- *    All WiFi/WebSocket/mDNS calls run on their own FreeRTOS task (wifiTaskFn(), see
- *    "WiFi / WebSocket (optional, serial-provisioned)" below), pinned to Core 0 as general good
- *    practice (keeps it off Core 1, where loop() and the hardware step/motion interrupts above
- *    live) -- though the step/motion timers' own hardware-interrupt affinity (point 1/2 above) is
- *    what actually makes them immune to WiFi activity, not this pinning by itself. It talks to the
- *    main loop() (Core 1) only via two small queues (wsInQueue/wsOutQueue) and a small mutex
- *    (wifiConfigMux) guarding the SSID/password/hostname buffers -- loop()/executeCommand() never
- *    touch WiFi/wsServer/MDNS directly. WiFi station power-save ("modem sleep") is also disabled
- *    (WiFi.setSleep(false), see startWifiConnect()) to avoid its periodic RF wake/resync stalls.
+ *    Runs on its own task (wifiTaskFn(), see "WiFi / WebSocket" below) pinned to Core 0, off
+ *    loop()'s Core 1. Talks to loop() only via wsInQueue/wsOutQueue and wifiConfigMux (guards
+ *    the SSID/password/hostname buffers) -- loop()/executeCommand() never touch WiFi directly.
  *
  *
  * TODO:
- * - max out I2C speed?
  * - Give error for invalid commands
  * - Encoder calibration option for offset magnet?
  * - Add header file with CAN ID's instead of magic numbers!
@@ -45,18 +33,8 @@
  * - Fault if another node with same ID exists
  * - Decide if EEPROM settings should be overwritten on flash?
  * - Error if too many steps per sec output
- * - [DONE v0.15] WiFi / WebSocket control -- see WIFI_SET / WIFI_STATUS?
- * - [DONE] WiFi/WebSocket/mDNS moved to their own task pinned to Core 0 (wifiTaskFn) so
- *   WiFi traffic can't make motion choppy -- see wsInQueue/wsOutQueue/wifiConfigMux
- * - [DONE] Motion/step timers switched from esp_timer to true hardware timer interrupts
- *   (timerBegin/timerAttachInterrupt) -- root-caused the remaining WiFi choppiness to
- *   esp_timer's background dispatch task floating onto whatever core WiFi's own
- *   high-priority internal task needed; a real hardware ISR isn't subject to that
- * - [DONE] Fixed boot-loop (Coprocessor exception / Core 1 panic) introduced by the above:
- *   onMotionTimer() did one bit of float math per tick (posSpeed -> Q-fixed max speed).
- *   That's fine inside a FreeRTOS task but crashes inside a real hardware ISR, which
- *   doesn't save/restore FPU context. Moved to recalcMotionParams() (task context) and
- *   cached in posSpeedStepsQ -- onMotionTimer()/onStepTimer() are now float-free
+ * - Increase I2C speed to 1M?
+
  */
 
 
@@ -155,7 +133,7 @@ CanFrame rxFrame;
 CanFrame txFrame;
 
 // ---------------- FIRMWARE VERSION ----------------------------------------------------------
-float firmwareVersion = 0.15; // 0.15 adds WiFi / WebSocket control -- the Web GUI prompts to update any node reporting 0.14 or lower
+float firmwareVersion = 0.16; // 0.16 fixes position-mode overshoot (dt_q truncation bug in the decel ramp); 0.15 adds WiFi / WebSocket control -- the Web GUI prompts to update any node reporting 0.14 or lower
 // --------------------------------------------------------------------------------------------
 
 // ---------------- Stepper Driver ---------------
@@ -209,14 +187,9 @@ struct MotionState {
 
 volatile MotionState motion = {0,0,0,0,0,false};
 
-// Position mode's max speed (posSpeed, deg/sec), pre-converted to Q-fixed steps/sec and
-// clamped to MAX_STEP_RATE_Q. Recomputed by recalcMotionParams() (plain task context, float
-// math is fine there) whenever posSpeed/stepsPerRev/microsteps change -- NOT recomputed
-// every tick inside onMotionTimer() anymore. onMotionTimer() now runs as a true hardware
-// timer ISR (see "TIMERS SETUP" in setup()), and floating-point instructions inside a real
-// ISR crash with a Coprocessor Exception on Xtensa/ESP32 -- the FPU context-save that makes
-// float math safe is only set up for task-level code, not interrupt-level code. This mirrors
-// motion.accelSteps_q/decelSteps_q, which were already handled the same way.
+// Position mode's max speed, pre-converted to Q-fixed steps/sec by recalcMotionParams()
+// (task context), not per-tick in onMotionTimer() -- float math in that real ISR crashes
+// with a Coprocessor Exception on Xtensa/ESP32. Same reasoning as accelSteps_q/decelSteps_q.
 volatile int32_t posSpeedStepsQ = 0;
 
 // Position control (main-thread copies, used for UI/telemetry)
@@ -247,7 +220,7 @@ const unsigned int DEFAULT_STEPS_PER_REV   = 200;
 const unsigned int DEFAULT_CONTROL_TYPE    = 0;       // 0=Open Loop, 1=Closed Loop
 const unsigned int DEFAULT_STANDSTILL_MODE = 0;       // 0=Normal
 const bool         DEFAULT_MAP_DIRECTION   = 0;       // 0=Normal
-const float        DEFAULT_POS_SPEED       = 2000.0f; // deg/sec
+const float        DEFAULT_POS_SPEED       = 1200.0f; // deg/sec
 const float        DEFAULT_ACCEL           = 720.0f;  // deg/sec^2
 const float        DEFAULT_DECEL           = 720.0f;  // deg/sec^2
 const unsigned int DEFAULT_REPORT_FREQ1    = 10;      // Hz (angle)
@@ -281,11 +254,9 @@ bool zeroEncAtBoot = DEFAULT_ZERO_ENC_BOOT;
 uint8_t storedAUXPayload[8] = {0, 0, 0, 0, 0, 0, 0, 0}; //AUX config (full CAN payload)
 
 // ---------------- WiFi / WebSocket (optional, provisioned over USB serial only -- see WIFI_SET) ---------------
-// All WiFi.*/wsServer.*/MDNS.* calls happen exclusively on the dedicated wifiTaskFn() task
-// (pinned to Core 0, created in setup()) -- never from loop()/executeCommand() (Core 1) --
-// so this I/O can't contend with step generation. The two tasks only talk via wsInQueue /
-// wsOutQueue (line-oriented, see WsLine) and wifiConfigMux (guards the SSID/password/
-// hostname buffers below, which are written from loop() but read from the WiFi task).
+// All WiFi.*/wsServer.*/MDNS.* calls happen only on wifiTaskFn() (Core 0), never from
+// loop() (Core 1), via wsInQueue/wsOutQueue (see WsLine) and wifiConfigMux (guards the
+// SSID/password/hostname buffers below).
 #define WS_PORT 81
 Preferences wifiPreferences;              // separate namespace ("wifinet") from the main settings preferences
 WebSocketsServer wsServer(WS_PORT);       // owned exclusively by wifiTaskFn() -- see above
@@ -305,9 +276,8 @@ uint8_t wsClientCount = 0;                 // WiFi-task-exclusive (only onWsEven
 bool wsServerStarted = false;              // WiFi-task-exclusive -- true once wsServer.begin() has actually been called (see startWifiConnect())
 TaskHandle_t wifiTaskHandle = nullptr;
 
-// Line-oriented messages passed between loop() and wifiTaskFn(). 48 bytes comfortably
-// covers both a "<CAN_ID_HEX> <RTR> <PAYLOAD_HEX>" command line and the short telemetry
-// lines built by forwardTelemetryToSerial() (char buf[32]).
+// Line-oriented messages passed between loop() and wifiTaskFn(). 48 bytes covers a
+// command line and the telemetry lines from forwardTelemetryToSerial() (buf[32]).
 struct WsLine {
     char text[48];
 };
@@ -352,12 +322,9 @@ uint16_t faultCode = 0;
 bool faultShutdownActive = false;
 
 // ---------------- Timers and critical section ---------------
-// Hardware timers (NOT esp_timer -- see the long comment in setup()'s "TIMERS SETUP"
-// section for why: esp_timer's background dispatch task could land on either core and
-// get delayed by WiFi's own high-priority internal task, causing the WiFi-related motion
-// choppiness. A hardware timer fires a genuine CPU interrupt tied to whichever core calls
-// timerAttachInterrupt() -- Core 1 here -- which preempts task-level code (including
-// WiFi's) almost unconditionally, regardless of FreeRTOS scheduling.
+// Hardware timers, not esp_timer -- see "TIMERS SETUP" in setup() for why (esp_timer's
+// background task can land on either core and get delayed by WiFi's own, causing choppy
+// motion; a real hardware interrupt preempts task-level code almost unconditionally).
 static hw_timer_t *motionHwTimer = nullptr;
 static hw_timer_t *stepHwTimer = nullptr;
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
@@ -517,24 +484,11 @@ void setup() {
 
     // --- TIMERS SETUP ---
 
-    // Hardware timers, not esp_timer. esp_timer's periodic/one-shot callbacks run on a
-    // shared background FreeRTOS task (ESP_TIMER_TASK) whose CPU core isn't fixed -- it
-    // can float onto either core, including whichever one ESP-IDF's own internal WiFi
-    // driver task needs at that moment (that task runs at very high priority so it never
-    // misses a radio event, e.g. an AP beacon roughly 10x/second -- independent of how
-    // much WiFi traffic *we* generate). When the floating esp_timer task lands on the
-    // same core as that WiFi activity, it gets delayed -- that's what was causing the
-    // step pulses to stutter whenever WiFi was enabled, no matter which core our own
-    // WiFi task was pinned to.
-    //
-    // A genuine hardware timer interrupt doesn't have this problem: timerAttachInterrupt()
-    // ties the interrupt to whichever core calls it (Core 1 here, since setup() runs on
-    // Core 1), and a real interrupt preempts task-level code on that core almost
-    // unconditionally -- including WiFi's own task -- rather than waiting its turn in a
-    // FreeRTOS ready queue. Both timers run at 1MHz (1 tick = 1us), so every existing
-    // microsecond-based delay value below (isr_stepDelay_us, STEP_PULSE_HIGH_US, etc.)
-    // is used completely unchanged -- only how onMotionTimer()/onStepTimer() get
-    // scheduled has changed, not the ramp/step math inside them.
+    // Hardware timers, not esp_timer -- esp_timer's callback task can float onto whatever
+    // core WiFi's own high-priority task needs, stuttering step pulses. A real hardware
+    // timer interrupt preempts task-level code almost unconditionally, including WiFi's.
+    // Both run at 1MHz (1 tick = 1us), so existing us-based delays are unchanged -- only
+    // how onMotionTimer()/onStepTimer() get scheduled is different.
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
     // arduino-esp32 3.x (IDF 5.x) timer API: timerBegin(frequencyHz) picks a free timer.
     // 1. Motion Profile Timer (Periodic 1000Hz) -- calculates the S-curve/Trapezoid ramp
@@ -580,22 +534,16 @@ void setup() {
     }
 
     // --- WiFi / WebSocket (optional) ---
-    // NOTE: wsServer.begin() is deliberately NOT called here -- it opens a TCP listen
-    // socket, and doing that before WiFi.mode() has ever run (i.e. before the netif/lwIP
-    // stack exists) crashes with "assert failed: xQueueSemaphoreTake" on an uninitialized
-    // queue. It's started lazily, once, inside startWifiConnect() instead -- right after
-    // the first WiFi.mode(WIFI_STA) call -- so it never runs on a node that has the
-    // feature disabled.
+    // NOTE: wsServer.begin() isn't called here -- before WiFi.mode() has run it crashes
+    // ("assert failed: xQueueSemaphoreTake"). Started lazily in startWifiConnect() instead.
     WiFi.persistent(false); // credentials are kept in our own Preferences namespace instead
     loadWifiCredentials();  // safe to call directly here -- wifiTaskFn() doesn't exist yet
     updateWifiHostname();   // ditto
     wsServer.onEvent(onWsEvent); // just registers a callback -- safe to call anytime
 
-    // All WiFi.*/wsServer.*/MDNS.* calls move onto this dedicated task from here on (see
-    // the comment above the WiFi globals), pinned to Core 0 so WiFi I/O can't contend with
-    // the Motion Task / Step ISR (Core 1) and cause the choppiness WiFi used to introduce.
-    // wifiTaskFn() itself checks wifiEnabled/wifiSsid (already loaded above) on entry and
-    // kicks off the first connect if the node is provisioned -- nothing further needed here.
+    // WiFi.*/wsServer.*/MDNS.* calls move onto this dedicated task from here on, Core 0,
+    // so WiFi I/O can't contend with the Motion/Step ISRs. wifiTaskFn() checks
+    // wifiEnabled/wifiSsid itself and kicks off the first connect if provisioned.
     wsInQueue = xQueueCreate(8, sizeof(WsLine));
     wsOutQueue = xQueueCreate(16, sizeof(WsLine));
     xTaskCreatePinnedToCore(wifiTaskFn, "wifi_service", 8192, NULL, 1, &wifiTaskHandle, 0);
@@ -739,10 +687,9 @@ void loop() {
         handleAuxSerialInput();
     }
 
-    // WiFi / WebSocket: wsServer.loop()/handleWiFiStateMachine()/MDNS now run exclusively
-    // on the dedicated wifiTaskFn() task (Core 0, see setup()). Here on Core 1 we only
-    // drain command lines the WiFi task received over the WebSocket and run them through
-    // the same handleCommandLine() path USB serial uses -- see wsInQueue in the WiFi globals.
+    // WiFi / WebSocket: wsServer.loop()/MDNS run exclusively on wifiTaskFn() (Core 0).
+    // Here we just drain command lines it received and run them through the same
+    // handleCommandLine() path USB serial uses.
     if (wsInQueue != nullptr) {
         WsLine incomingWsLine;
         while (xQueueReceive(wsInQueue, &incomingWsLine, 0) == pdTRUE) {
@@ -790,12 +737,9 @@ void IRAM_ATTR onDiagInterrupt() {
     stallguardTriggered = true;
 }
 
-// Arms stepHwTimer for a single one-shot fire, delay_us ticks (= microseconds, timer runs
-// at 1MHz) from now. Replaces esp_timer_start_once(stepTimer, delay_us) -- called from
-// onMotionTimer()'s kickstart and from onStepTimer()'s own self-rearm, both already
-// running in hardware ISR context, so this must stay IRAM-resident and avoid anything
-// blocking. timerWrite() resets the counter so the alarm is always delay_us away from
-// *now*, matching esp_timer_start_once()'s semantics exactly.
+// Arms stepHwTimer for a single one-shot fire, delay_us from now (timer runs at 1MHz).
+// Replaces esp_timer_start_once(). Called from ISR context (onMotionTimer()'s kickstart,
+// onStepTimer()'s self-rearm), so must stay IRAM-resident and non-blocking.
 void IRAM_ATTR armStepTimerOnce(uint32_t delay_us) {
     timerWrite(stepHwTimer, 0);
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
@@ -882,8 +826,15 @@ void IRAM_ATTR onMotionTimer() {
 
     // --- 2. Apply Acceleration/Deceleration (Q-fixed arithmetic) ---
     // If accel or decel is 0, velocity snaps instantly to target (no ramping).
-    // dt_q = ONE_Q / 1000 for 1 kHz loop
-    const int32_t dt_q = ONE_Q / 1000; // 65
+    //
+    // [FIX - overshoot] dv used to go through dt_q = ONE_Q/1000, meant to be dt=1ms in
+    // Q12. But 4096/1000 truncates to 4 (not 4.096), so dv was really chosen_a_q/1024, not
+    // /1000 -- a fixed 2.34% shortfall in the real accel/decel rate, every tick, regardless
+    // of ISR timing (hence the earlier timing-based fixes not helping). The stopping-
+    // distance switch curve above assumes decel_q is applied exactly, so a decel that's
+    // ~2.34% weak takes ~2.34% more distance to reach v=0, matching the measured overshoot
+    // closely. Since this ISR is a fixed 1kHz timer, dt is always exactly 1/1000s, so just
+    // divide by 1000 directly -- no lossy Q12 round-trip needed.
     bool wasStopped = (v_q == 0);
     if (v_q < targetV_q) {
         // speeding up; choose accel based on sign of v (if negative use decel to cross zero)
@@ -891,7 +842,8 @@ void IRAM_ATTR onMotionTimer() {
         if (chosen_a_q == 0) {
             v_q = targetV_q; // instant
         } else {
-            int32_t dv = (int32_t)(((int64_t)chosen_a_q * (int64_t)dt_q) >> Q);
+            int32_t dv = (int32_t)((int64_t)chosen_a_q / 1000);
+            if (dv == 0) dv = 1; // never let a tiny nonzero accel/decel stall the ramp entirely
             v_q += dv;
             if (v_q > targetV_q) v_q = targetV_q;
         }
@@ -900,7 +852,8 @@ void IRAM_ATTR onMotionTimer() {
         if (chosen_a_q == 0) {
             v_q = targetV_q; // instant
         } else {
-            int32_t dv = (int32_t)(((int64_t)chosen_a_q * (int64_t)dt_q) >> Q);
+            int32_t dv = (int32_t)((int64_t)chosen_a_q / 1000);
+            if (dv == 0) dv = 1; // never let a tiny nonzero accel/decel stall the ramp entirely
             v_q -= dv;
             if (v_q < targetV_q) v_q = targetV_q;
         }
@@ -963,15 +916,17 @@ void IRAM_ATTR onMotionTimer() {
 // falling edge) and re-arms for the remaining period.
 void IRAM_ATTR onStepTimer() {
     portENTER_CRITICAL_ISR(&timerMux);
+    uint32_t local_stepDelay = isr_stepDelay_us;
+    bool local_dirState = isr_dirState;
 
-    if (isr_stepDelay_us == 0) {
+    if (local_stepDelay == 0) {
         motion.isRunning = false;
         portEXIT_CRITICAL_ISR(&timerMux);
         return;
     }
 
     // DIR pin
-    if (isr_dirState) {
+    if (local_dirState) {
         REG_WRITE(GPIO_OUT_W1TS_REG, DIR_MASK);   // DIR = HIGH
     } else {
         REG_WRITE(GPIO_OUT_W1TC_REG, DIR_MASK);   // DIR = LOW
@@ -981,21 +936,20 @@ void IRAM_ATTR onStepTimer() {
     REG_WRITE(GPIO_OUT_W1TS_REG, STEP_MASK);
 
     // logical position update
-    bool logicalUp = (isr_dirState == HIGH);
+    bool logicalUp = (local_dirState == HIGH);
     if (mapDirection) logicalUp = !logicalUp;
 
     if (logicalUp) isr_currentPos++;
     else           isr_currentPos--;
 
-    // Hold STEP high via a tight busy-wait.
     esp_rom_delay_us(STEP_PULSE_HIGH_US);
 
     // Falling edge: STEP = LOW
     REG_WRITE(GPIO_OUT_W1TC_REG, STEP_MASK);
 
     // Re-arm timer for the remainder of the step period
-    uint32_t next_delay = (isr_stepDelay_us > STEP_PULSE_HIGH_US)
-                               ? (isr_stepDelay_us - STEP_PULSE_HIGH_US)
+    uint32_t next_delay = (local_stepDelay > STEP_PULSE_HIGH_US)
+                               ? (local_stepDelay - STEP_PULSE_HIGH_US)
                                : 1;
     if (next_delay < 20) next_delay = 20;
 
@@ -1510,8 +1464,7 @@ void executeCommand(uint8_t targetNode, uint8_t msgType, const uint8_t *payload,
                       NODE_ID = newId;
                       Serial.printf("Node ID set to: %u\n", NODE_ID);
                       updateWifiHostname();
-                      // MDNS.*/WiFi.* must only run on wifiTaskFn() (Core 0) -- flag it instead
-                      // of touching MDNS directly; the WiFi task restarts it under the new name.
+                      // MDNS.*/WiFi.* only run on wifiTaskFn() -- flag it, don't touch MDNS here.
                       wifiHostnameDirty = true;
                   } else {
                       Serial.printf("Invalid Node ID requested: %u (must be 1-%d)\n", newId, MAX_CAN_ID);
@@ -1841,12 +1794,8 @@ void handleCANFrame(const CanFrame &frame) {
     }
 
     // Forward all non-RTR messages onward (USB serial, AUX, and WebSocket).
-    // NOTE: don't gate this on "&& Serial" -- forwardTelemetryToSerial() already checks
-    // Serial internally before actually writing to it, but also unconditionally handles
-    // the AUX and WebSocket forwarding. Gating the whole call on Serial being connected
-    // meant other nodes' CAN telemetry never reached the WebSocket (only this node's own,
-    // sent via canSendTelemetry()) whenever nothing was plugged into USB -- exactly the
-    // "only 1 node found over WiFi" symptom.
+    // NOTE: don't gate this on "&& Serial" -- it also handles AUX/WebSocket forwarding,
+    // and gating broke WebSocket telemetry from other nodes without USB plugged in.
     if(rtr == 0) {
         forwardTelemetryToSerial(frame);
     }
@@ -2019,14 +1968,12 @@ void sendCANFrame(unsigned long canId, uint8_t *payload, uint8_t len, bool rtr) 
 }
 
 // -------------------- WiFi / WebSocket (optional, serial-provisioned) --------------------
-// Everything below is opt-in per node (wifiEnabled). Credentials are only ever accepted over
-// USB serial (WIFI_SET, handled in handleSerialInput()) -- never over the CAN bus, which is
-// shared by every node, and never over an existing WebSocket connection. See CAN Protocol.md.
+// Opt-in per node (wifiEnabled). Credentials only ever accepted over USB serial
+// (WIFI_SET) -- never CAN or an existing WebSocket. See CAN Protocol.md.
 
-// Queues a text line for wifiTaskFn() to broadcast to every connected WebSocket client --
-// called from loop() (Core 1), so it must never touch wsServer directly (that's owned
-// exclusively by the WiFi task on Core 0). Non-blocking: if the queue is momentarily full
-// (WiFi task busy / disabled) this drops the line rather than stalling motion control.
+// Queues a line for wifiTaskFn() to broadcast to WebSocket clients. Called from loop()
+// (Core 1), so never touches wsServer directly. Non-blocking: drops the line if the
+// queue is momentarily full rather than stalling motion control.
 void broadcastLineToWS(const char *buf) {
     if (wsOutQueue == nullptr) return; // not created yet (shouldn't happen past setup())
     WsLine line;
@@ -2034,9 +1981,9 @@ void broadcastLineToWS(const char *buf) {
     xQueueSend(wsOutQueue, &line, 0);
 }
 
-// Builds the WIFI_STATUS reply line: WIFI_STATUS,<enabled>,<connected>,<hostname>,<ip>,<ssid>
-// The password is intentionally never included. Called from both loop() (serial query) and
-// wifiTaskFn() (WebSocket query), so the SSID/hostname buffers are read under wifiConfigMux.
+// Builds the WIFI_STATUS reply: WIFI_STATUS,<enabled>,<connected>,<hostname>,<ip>,<ssid>
+// (password never included). Called from loop() and wifiTaskFn(), so reads SSID/hostname
+// under wifiConfigMux.
 String buildWifiStatusLine() {
     bool connected = (WiFi.status() == WL_CONNECTED); // WiFi.* calls are documented thread-safe (ESP-IDF)
     char hostCopy[sizeof(wifiHostname)];
@@ -2059,11 +2006,9 @@ void handleWifiStatusQuery(Print &out) {
     out.println(buildWifiStatusLine());
 }
 
-// WIFI_SET,<enabled 0|1>,<ssid>,<password>  -- serial-only, see handleSerialInput().
-// SSID must not itself contain a comma; password is everything after the second comma,
-// so it may contain commas freely. An empty password for the SAME ssid keeps the
-// previously stored password (lets the GUI toggle "enabled" or change nothing else
-// without having to resend the password).
+// WIFI_SET,<enabled 0|1>,<ssid>,<password> -- serial-only. SSID can't contain a comma;
+// password is everything after the 2nd comma. Empty password + same SSID keeps the
+// stored password (lets the GUI toggle "enabled" without resending it).
 void handleWifiSetCommand(const String &line) {
     int c1 = line.indexOf(',');           // right after "WIFI_SET"
     int c2 = (c1 < 0) ? -1 : line.indexOf(',', c1 + 1);  // right after <enabled>
@@ -2088,8 +2033,7 @@ void handleWifiSetCommand(const String &line) {
         return;
     }
 
-    // Snapshot the previous SSID (under the mutex -- wifiTaskFn() may be reading it right
-    // now) before deciding whether to keep the existing password.
+    // Snapshot the previous SSID (under the mutex) before deciding whether to keep the password.
     char prevSsid[sizeof(wifiSsid)];
     portENTER_CRITICAL(&wifiConfigMux);
     strlcpy(prevSsid, wifiSsid, sizeof(prevSsid));
@@ -2106,9 +2050,8 @@ void handleWifiSetCommand(const String &line) {
     saveWifiCredentials();
     Serial.println("WIFI_SET_OK");
 
-    // Actually bringing WiFi up/down (WiFi.*, wsServer.begin()) must only ever happen on
-    // the dedicated WiFi task (see wifiTaskFn()) -- flag the request here; the task picks
-    // it up on its next iteration (a couple of ms away at most, it isn't blocking).
+    // Bringing WiFi up/down only ever happens on wifiTaskFn() -- flag it here; the task
+    // picks it up next iteration.
     if (wifiEnabled && strlen(wifiSsid) > 0) {
         wifiConnectRequested = true;
     } else {
@@ -2140,10 +2083,8 @@ void updateWifiHostname() {
     portEXIT_CRITICAL(&wifiConfigMux);
 }
 
-// Kicks off a non-blocking WiFi connect attempt. Progress/result is polled in
-// handleWiFiStateMachine(). Only ever called from wifiTaskFn() (Core 0) -- at task entry,
-// from its wifiConnectRequested handling, or from handleWiFiStateMachine()'s own
-// reconnect/timeout branches -- never from loop().
+// Kicks off a non-blocking WiFi connect; progress is polled in handleWiFiStateMachine().
+// Only ever called from wifiTaskFn() (Core 0), never loop().
 void startWifiConnect() {
     char ssidCopy[sizeof(wifiSsid)];
     char passCopy[sizeof(wifiPassword)];
@@ -2155,18 +2096,13 @@ void startWifiConnect() {
     portEXIT_CRITICAL(&wifiConfigMux);
 
     WiFi.mode(WIFI_STA);
-    // Station-mode WiFi power-save ("modem sleep") is ON by default -- the radio
-    // periodically sleeps between beacons to save power, and each wake-up involves an RF
-    // resync that briefly stalls the chip. That stall doesn't respect task priorities or
-    // core pinning, so it's a well-known cause of exactly this kind of periodic jitter in
-    // time-critical sketches, independent of which core anything is running on. This node
-    // is USB/externally powered, not battery, so there's no reason to pay for power-save.
+    // Modem sleep is ON by default -- each wake-up stalls the chip briefly, a source of
+    // jitter. This node is USB-powered, so skip it.
     WiFi.setSleep(false);
     WiFi.setHostname(hostCopy);
     WiFi.begin(ssidCopy, passCopy);
 
-    // Lazily start the WebSocket server's listen socket the first time we actually bring
-    // up WiFi -- see the comment in setup() for why this can't happen any earlier.
+    // Lazily start the listen socket the first time WiFi actually comes up (see setup()).
     if (!wsServerStarted) {
         wsServer.begin();
         wsServerStarted = true;
@@ -2177,10 +2113,8 @@ void startWifiConnect() {
     Serial.printf("WiFi: connecting to \"%s\" as %s.local...\n", ssidCopy, hostCopy);
 }
 
-// Non-blocking WiFi state machine: notices a fresh connect (starts mDNS), notices a drop
-// (reconnects), and retries if a connect attempt doesn't resolve within the timeout
-// (wrong password / AP out of range). No-op whenever the feature is disabled. Only ever
-// called from wifiTaskFn() (Core 0) -- never from loop().
+// Non-blocking WiFi state machine: starts mDNS on connect, reconnects on drop, retries
+// on timeout. No-op when disabled. Called only from wifiTaskFn().
 void handleWiFiStateMachine() {
     if (!wifiEnabled) return;
     bool connected = (WiFi.status() == WL_CONNECTED);
@@ -2209,11 +2143,9 @@ void handleWiFiStateMachine() {
     }
 }
 
-// WebSocket event callback (WebSocketsServer). Text frames carry the same line protocol as
-// USB serial: a "<CAN_ID_HEX> <RTR> <PAYLOAD_HEX>" command, or a WIFI_STATUS? status query
-// (read-only -- WIFI_SET is serial-only, intentionally not handled here). Runs inside
-// wifiTaskFn() (called synchronously from wsServer.loop(), Core 0), so it must never touch
-// CAN/motion state directly -- a command line is handed off to loop() via wsInQueue instead.
+// WebSocket event callback. Text frames carry the same line protocol as USB serial.
+// Runs inside wifiTaskFn() (Core 0), so never touches CAN/motion state directly --
+// command lines are handed off to loop() via wsInQueue.
 void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
     switch (type) {
         case WStype_CONNECTED:
@@ -2254,16 +2186,12 @@ void onWsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
     }
 }
 
-// Dedicated task for all WiFi/WebSocket/mDNS I/O -- pinned to Core 0 at creation (see
-// setup()), kept off Core 1 where loop() and the hardware-interrupt-driven Motion Task /
-// Step ISR now live. This task exclusively owns wsServer, WiFi.*, and MDNS.*;
-// loop() (Core 1) talks to it only through wsInQueue/wsOutQueue and the small set of
-// request flags (wifiConnectRequested/wifiDisconnectRequested/wifiHostnameDirty) -- see
-// the WiFi globals comment above for the full picture.
+// Dedicated task for all WiFi/WebSocket/mDNS I/O, pinned to Core 0. Owns wsServer/WiFi.*/
+// MDNS.* exclusively; loop() talks to it only via wsInQueue/wsOutQueue and the
+// wifi*Requested/Dirty flags.
 void wifiTaskFn(void *pvParameters) {
-    // wifiEnabled/wifiSsid were already loaded by loadWifiCredentials() in setup() before
-    // this task was created. The mutex here is just cheap insurance against the (very
-    // unlikely) case of a WIFI_SET serial command landing in the same instant.
+    // wifiEnabled/wifiSsid already loaded in setup(). Mutex here is cheap insurance
+    // against a WIFI_SET command landing at the same instant.
     portENTER_CRITICAL(&wifiConfigMux);
     bool haveSsid = (strlen(wifiSsid) > 0);
     portEXIT_CRITICAL(&wifiConfigMux);
@@ -2300,9 +2228,8 @@ void wifiTaskFn(void *pvParameters) {
             }
         }
 
-        // Drain outgoing telemetry lines queued by broadcastLineToWS() (loop(), Core 1)
-        // and actually broadcast them -- this is the only place wsServer.broadcastTXT()
-        // is ever called from.
+        // Drain and broadcast lines queued by broadcastLineToWS() -- the only caller of
+        // wsServer.broadcastTXT().
         while (xQueueReceive(wsOutQueue, &outgoing, 0) == pdTRUE) {
             if (wsServerStarted && wsClientCount > 0) {
                 wsServer.broadcastTXT((uint8_t*)outgoing.text, (size_t)strlen(outgoing.text));
