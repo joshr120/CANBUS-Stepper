@@ -63,21 +63,22 @@ Again ensure the PCB is installed in the orientation shown so the motor connecto
 
 ## Power on the Board
 
-Connect a 12V or 24V supply to the "PWR IN" connector.
+Connect a 12V or 24V supply to the "PWR IN" connector. A standard XT30 connector can be used for power.
 
 <img src="https://github.com/user-attachments/assets/b363f0bc-ffd2-418a-9c67-79c06eeb4b52" width="50%" />
-
 
 You can power the board via the USB Type-C connector for configuration and monitoring, but you will NOT be able to power/move the motor. (See the [PD Stepper](https://thingsbyjosh.com/products/pd-stepper) if you want a USB PD powered stepper motor driver)
 
 ## Daisy Chaining Boards
 Pay attention to the IN vs OUT labels on the Power connectors. 
 
-<img src="https://github.com/user-attachments/assets/44bd9c1c-b871-4c80-a022-6918a9807678" width="40%" />
-<img src="https://github.com/user-attachments/assets/4861487d-afa7-44a8-a55b-be03286a4ab3" width="40%" />
+<img src="https://github.com/user-attachments/assets/8caea5b8-1b53-4eff-b528-4ec1e6a78cea" width="50%" />
 
 
-When daisy chaining nodes together set the "CAN TERM" DIP switch ON for the two boards at each end of the string, and OFF for all others.
+
+⚠️ When daisy chaining nodes together set the "CAN TERM" DIP switch ON for the two boards at each end of the string, and OFF for all others.
+
+⚠️ Every node/board on a bus needs a unique node ID. This is set by holding down the SW1 button while powering on a node. The number of times the LED flashes before releasing the button is the new Node ID (upto 31).
 
 ## Using the Web GUI
 
@@ -86,10 +87,10 @@ The Web GUI can be used to control, configure and program the CANBUS Stepper.
 It is viewable online at [thingsbyjosh.com/canbus_gui](https://thingsbyjosh.com/canbus_gui)
 
 1. Connect your CANBUS Stepper board to a PC via the USB type-C connector on the PCB.
-2. Open the Web GUI, press "Connect" and select your board. On windows machines this will come up as something like "USB JTAG/serial debug unit (COMxx)". You can also find the COM port number by opening device manager on your PC.
+2. Open the Web GUI, press "Connect via USB" and select your board. On windows machines this will come up as something like "USB JTAG/serial debug unit (COMxx)". You can also find the COM port number by opening device manager on your PC.
 
 <p float="left">
-  <img src="https://github.com/user-attachments/assets/c1ec2f50-f665-4980-9f79-b7a5914e0ac8" width="53%" />
+  <img src="https://github.com/user-attachments/assets/fc696aa7-0247-400b-b9af-5dba61f54305" width="53%" />
   <img src="https://github.com/user-attachments/assets/e7d89f7a-5c0b-406d-8234-d92349b7a5e2" width="43%" /> 
 </p>
 
@@ -98,18 +99,28 @@ It is viewable online at [thingsbyjosh.com/canbus_gui](https://thingsbyjosh.com/
 5. You can update your CANBUS Stepper to the latest software by using the UPDATE FIRMWARE button and automatically flashing the latest firmware pulled right from this GitHub:
 
 <p float="left">
-  <img src="https://github.com/user-attachments/assets/ec13c6c4-5593-4257-92d7-a738f161a5f4" width="60%" />
+  <img src="https://github.com/user-attachments/assets/fc04c014-c239-455f-8515-ca8a926522e6" width="60%" />
   <img src="https://github.com/user-attachments/assets/ceb72661-ec54-4ed3-aaed-dc5fe9b0db12" width="28%" /> 
 </p>
+
+6. Once connected via USB you can enable configure WiFi information to wirelessly connect over websockets. You can then disconnect from USB and connect via WiFi with either the hostname "canbus-stepper-[NODE ID].local" or the IP address of the node. 
+
+<p float="left">
+  <img src="https://github.com/user-attachments/assets/96b8514c-f808-4762-acfe-8a27aed66d46" width="55%" />
+  <img src="https://github.com/user-attachments/assets/71e49f1b-d34d-458a-89e9-64133c448618" width="43%" /> 
+</p>
+(Note that analog input functionality of the AUX connector will not be usable when WiFI is enabled due to an IO clash).
 
 
 ## Closed Loop Control
 
-Enable closed loop control in the web GUI
+To enable closed loop control in the web GUI:
 
 1. Under "LIVE TELEMETRY, take note of the "Encoder Angle (deg)" value.
 2. Change the "Set Position (deg)" to 360 by double clicking the value.
 3. The "Encoder Angle (deg)" should increase by 360 deg ± 1 deg. If this instead decreases by 360 set the "Map Direction" to 1. If it increases by 180 degrees, set the "Steps per Rev" to 400.
+4. Change "Closed Loop Type" to 1.
+5. Once confirmed working, press "Save to Flash" to remember settings next power cycle.
 
 ## Sensorless Homing
 
