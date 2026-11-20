@@ -25,9 +25,9 @@ Just received your CANBUS Stepper? This guide walks you through assembling it, s
 
 | Item | Notes |
 |---|---|
+|CANBUS Stepper Kit| Available at [thingsbyjosh.com](https://thingsbyjosh.com/products/canbus-stepper)|
 | NEMA 17 stepper motor | Ideally **34 mm long** with a standard **6-pin JST PH** connector |
-| Included M3 × 40 mm screws | Sized for a 34 mm motor. Longer or shorter motors need different screws |
-| Superglue | Only needed if you want encoder position readings |
+| Superglue | Only needed if you want encoder position readings / closed loop control |
 
 **Example motor:** Hanpose 17HS3401S, available on [Amazon](https://www.amazon.com/Captive-Stepper-17HS3401S-4-Lead-Printer/dp/B0G9KRJFTY) and [AliExpress](https://www.aliexpress.com/item/1005006577156384.html).
 
