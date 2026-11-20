@@ -234,8 +234,8 @@ When StallGuard triggers, the motor stops and the zero position is reset.
 | Setting | MsgType | Purpose |
 |---|:---:|---|
 | Stallguard Threshold | `12` | Adjusts the motor load at which a stall is detected |
-| Stallguard Value | N/A | Live readout of the current load (useful for tuning the threshold) |
-| Stallguard Behaviour | `7` | Choose what happens on a stall (`4` = stop and re-zero) |
+| Stallguard Value | `36` | Live readout of the current load (useful for tuning the threshold) |
+| Stallguard Behaviour | `7` | Choose what happens on a stall: <br> `0` = Do Nothing <br> `1` = Stop <br> `2` = Stop and set as zero position <br> `3` = Stop ONCE (resets to mode 0 after first trigger) <br> `4` = Stop and set as zero position ONCE (resets to mode 0 after first trigger) |
 
 All of these are available in the Web GUI.
 
