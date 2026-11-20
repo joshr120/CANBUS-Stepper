@@ -1,156 +1,268 @@
-# **CANBUS Stepper** - Getting Started
-If you just received your CANBUS Stepper this will show you how to spin a motor and configure the driver using the web GUI.
+# CANBUS Stepper: Getting Started
 
-Web GUI: [thingsbyjosh.com/canbus_gui](https://thingsbyjosh.com/canbus_gui)
+Just received your CANBUS Stepper? This guide walks you through assembling it, spinning a motor, and configuring the driver using the web GUI.
 
-## Assembling a kit onto a Nema 17 ##
-For easiest assembly your motor should have the stardard 6 pin JST PH connector, and the included screws (M3x40mm) are best suited for a 34mm length motor.
-For example the Hanpose 17HS3401S, available on [Amazon](https://www.amazon.com/Captive-Stepper-17HS3401S-4-Lead-Printer/dp/B0G9KRJFTY) and [Aliexpress](https://www.aliexpress.com/item/1005006577156384.html).
+> **Web GUI:** [thingsbyjosh.com/canbus_gui](https://thingsbyjosh.com/canbus_gui)
 
-### 1. Install the magnet onto your motor (only needed for reading encoder position)
-   
-   Carefully superglue the included diametrically magnitised magnet onto the centre of the motor shaft.  
+---
 
-   Only a very small amount of glue is required, take care not to get any in the motor bearing.  
-   
-   <img src="https://github.com/user-attachments/assets/c32ad5e4-c292-4e67-a0ee-864bf49cce15" width="40%" style="margin: 15px;"/>
+## Contents
 
-### 2. Remove the original motor screws
+1. [Assembling the Kit onto a NEMA 17](#1-assembling-the-kit-onto-a-nema-17)
+2. [Powering the Board](#2-powering-the-board)
+3. [Daisy Chaining Boards](#3-daisy-chaining-boards)
+4. [Using the Web GUI](#4-using-the-web-gui)
+5. [Closed Loop Control](#5-closed-loop-control)
+6. [Sensorless Homing](#6-sensorless-homing)
+7. [Serial Control](#7-serial-control)
+8. [Custom CAN Messages](#8-custom-can-messages)
+
+---
+
+## 1. Assembling the Kit onto a NEMA 17
+
+### What you'll need
+
+| Item | Notes |
+|---|---|
+| NEMA 17 stepper motor | Ideally **34 mm long** with a standard **6-pin JST PH** connector |
+| Included M3 × 40 mm screws | Sized for a 34 mm motor. Longer or shorter motors need different screws |
+| Superglue | Only needed if you want encoder position readings |
+
+**Example motor:** Hanpose 17HS3401S, available on [Amazon](https://www.amazon.com/Captive-Stepper-17HS3401S-4-Lead-Printer/dp/B0G9KRJFTY) and [AliExpress](https://www.aliexpress.com/item/1005006577156384.html).
+
+---
+
+### Step 1: Install the magnet *(encoder only)*
+
+Superglue the included diametrically magnetised magnet onto the **centre of the motor shaft**.
+
+> [!CAUTION]
+> Use only a very small amount of glue, and keep it out of the motor bearing.
+
+<img src="https://github.com/user-attachments/assets/c32ad5e4-c292-4e67-a0ee-864bf49cce15" width="40%" />
+
+---
+
+### Step 2: Remove the original motor screws
 
 <img src="https://github.com/user-attachments/assets/aff3b972-af76-4eab-b2e3-df1b70109dc4" width="40%" />
 
-### 3. Peel off the protective film and add one of the included heat pads onto the heat spreader
+---
 
-  Ensure this is added on the recessed side of the heat spreader
+### Step 3: Apply a heat pad to the heat spreader
 
-<img src="https://github.com/user-attachments/assets/619f5212-02ab-4623-b3c7-b2ffd994ca20" width="40%" />
-<img src="https://github.com/user-attachments/assets/c62a9630-885b-43b8-9ef4-58c4579a1af6" width="40%" />
+Peel off the protective film and stick one of the included heat pads onto the heat spreader.
 
-### 4. Place the spacer onto the motor ensuring it is in the orientation show relative to the motor connector
+> [!IMPORTANT]
+> The heat pad goes on the **recessed side** of the heat spreader.
+
+<p float="left">
+  <img src="https://github.com/user-attachments/assets/619f5212-02ab-4623-b3c7-b2ffd994ca20" width="40%" />
+  <img src="https://github.com/user-attachments/assets/c62a9630-885b-43b8-9ef4-58c4579a1af6" width="40%" />
+</p>
+
+---
+
+### Step 4: Fit the spacer
+
+Place the spacer onto the motor in the orientation shown, relative to the motor connector.
 
 <img src="https://github.com/user-attachments/assets/975f0007-0633-43b5-bc02-90deb9b1e985" width="40%" />
 
-### 5. Add the PCB
+---
 
-Again ensure the PCB is installed in the orientation shown so the motor connectors as well as the heat pad line up
+### Step 5: Add the PCB
+
+Install the PCB in the orientation shown so that both the **motor connectors** and the **heat pad** line up.
 
 <img src="https://github.com/user-attachments/assets/a98cf78d-519c-4a04-afc4-1bb1bafb2742" width="40%" />
 
-### 5. Add the cover and new countersunk screws
+---
 
-   The included screws are best suited for a 34mm length Nema 17 you may need longer or shorter ones depending on your motor. (included ones are M3x40mm)
-   
-   <img src="https://github.com/user-attachments/assets/860b4957-be2f-4ece-8546-8102fa0447d0" width="40%" />
-   <img src="https://github.com/user-attachments/assets/90658808-802d-4ca8-b0fa-40012e529a51" width="40%" />
+### Step 6: Add the cover and countersunk screws
 
-### 6. Add the heatsink
+Fit the cover and secure it with the included M3 × 40 mm countersunk screws.
 
-   Use the larger heatsink if you plan on running the motor for long periods and/or at high currents
-   
-   <img src="https://github.com/user-attachments/assets/281de296-c433-4fc9-ba4a-39a087a0c895" width="40%" />
-   <img src="https://github.com/user-attachments/assets/5bc483ff-dd3c-4c62-a775-2643c6d06de9" width="40%" />
+> [!NOTE]
+> These screws suit a 34 mm NEMA 17. Other motor lengths may need longer or shorter screws.
 
+<p float="left">
+  <img src="https://github.com/user-attachments/assets/860b4957-be2f-4ece-8546-8102fa0447d0" width="40%" />
+  <img src="https://github.com/user-attachments/assets/90658808-802d-4ca8-b0fa-40012e529a51" width="40%" />
+</p>
 
-### 7. Plug in motor loom
+---
 
- There are 2 looms provided in the kit for different motors, try one and if in the next steps your motor stutters/doesnt spin, power off the board and try the other one. 
+### Step 7: Add the heatsink
 
-  Note. Do not disconnect/connect the motor while the board is powered.
+Use the **larger heatsink** if you plan to run the motor for long periods and/or at high currents.
 
-  <img src="https://github.com/user-attachments/assets/fc9cb31f-0f76-4702-9303-2ef88845c0f4" width="40%" />
-  
+<p float="left">
+  <img src="https://github.com/user-attachments/assets/281de296-c433-4fc9-ba4a-39a087a0c895" width="40%" />
+  <img src="https://github.com/user-attachments/assets/5bc483ff-dd3c-4c62-a775-2643c6d06de9" width="40%" />
+</p>
 
+---
 
-## Power on the Board
+### Step 8: Plug in the motor loom
 
-Connect a 12V or 24V supply to the "PWR IN" connector. A standard XT30 connector can be used for power.
+The kit includes **two looms** to suit different motors. Try one first. If the motor stutters or doesn't spin in the later steps, power off the board and try the other.
+
+> [!WARNING]
+> Never connect or disconnect the motor while the board is powered.
+
+<img src="https://github.com/user-attachments/assets/fc9cb31f-0f76-4702-9303-2ef88845c0f4" width="40%" />
+
+---
+
+## 2. Powering the Board
+
+Connect a **12 V or 24 V** supply to the **PWR IN** connector. A standard **XT30** connector can be used.
 
 <img src="https://github.com/user-attachments/assets/b363f0bc-ffd2-418a-9c67-79c06eeb4b52" width="50%" />
 
-You can power the board via the USB Type-C connector for configuration and monitoring, but you will NOT be able to power/move the motor. (See the [PD Stepper](https://thingsbyjosh.com/products/pd-stepper) if you want a USB PD powered stepper motor driver)
+| Power source | Configure & monitor | Drive the motor |
+|---|:---:|:---:|
+| 12 V / 24 V via PWR IN | ✅ | ✅ |
+| USB Type-C only | ✅ | ❌ |
 
-## Daisy Chaining Boards
-Pay attention to the IN vs OUT labels on the Power connectors. 
+> [!TIP]
+> Want a stepper driver powered entirely over USB? See the [PD Stepper](https://thingsbyjosh.com/products/pd-stepper).
+
+---
+
+## 3. Daisy Chaining Boards
+
+Pay attention to the **IN** vs **OUT** labels on the power connectors.
 
 <img src="https://github.com/user-attachments/assets/8caea5b8-1b53-4eff-b528-4ec1e6a78cea" width="50%" />
 
+> [!WARNING]
+> **CAN termination:** Set the **CAN TERM** DIP switch **ON** for the two boards at each end of the chain, and **OFF** for every board in between.
 
+> [!WARNING]
+> **Unique node IDs:** Every board on the bus needs its own node ID (1–31).
+> To set it, **hold SW1 while powering on** the board. The LED flashes once per count. Release the button when it reaches the ID you want.
 
-⚠️ When daisy chaining nodes together set the "CAN TERM" DIP switch ON for the two boards at each end of the string, and OFF for all others.
+---
 
-⚠️ Every node/board on a bus needs a unique node ID. This is set by holding down the SW1 button while powering on a node. The number of times the LED flashes before releasing the button is the new Node ID (upto 31).
+## 4. Using the Web GUI
 
-## Using the Web GUI
+The [Web GUI](https://thingsbyjosh.com/canbus_gui) is used to control, configure, and update the CANBUS Stepper.
 
-The Web GUI can be used to control, configure and program the CANBUS Stepper.
+### Connecting
 
-It is viewable online at [thingsbyjosh.com/canbus_gui](https://thingsbyjosh.com/canbus_gui)
-
-1. Connect your CANBUS Stepper board to a PC via the USB type-C connector on the PCB.
-2. Open the Web GUI, press "Connect via USB" and select your board. On windows machines this will come up as something like "USB JTAG/serial debug unit (COMxx)". You can also find the COM port number by opening device manager on your PC.
+1. Connect the board to your PC using the **USB Type-C** port on the PCB.
+2. Open the Web GUI, click **Connect via USB**, and select your board.
+   - On Windows it appears as something like **"USB JTAG/serial debug unit (COMxx)"**.
+   - You can confirm the COM port number in **Device Manager**.
 
 <p float="left">
   <img src="https://github.com/user-attachments/assets/fc696aa7-0247-400b-b9af-5dba61f54305" width="53%" />
-  <img src="https://github.com/user-attachments/assets/e7d89f7a-5c0b-406d-8234-d92349b7a5e2" width="43%" /> 
+  <img src="https://github.com/user-attachments/assets/e7d89f7a-5c0b-406d-8234-d92349b7a5e2" width="43%" />
 </p>
 
-3. View all discovered Nodes by pressing "x Nodes Found" on the bottom right. Click on a node to view it (or select the node ID with "TARGET NODE" on the top right). Setting the "TARGET NODE" to "0" will send the command to all nodes on the bus.
-4. Configure Node Device Settings by double clicking the value. After testing the change behaves as expected press "SAVE TO FLASH" to keep the values between power cycles.
-5. You can update your CANBUS Stepper to the latest software by using the UPDATE FIRMWARE button and automatically flashing the latest firmware pulled right from this GitHub:
+### Selecting a node
+
+3. Click **"x Nodes Found"** (bottom right) to see every discovered node. Click one to view it, or pick its ID from **TARGET NODE** (top right).
+
+> [!TIP]
+> Setting **TARGET NODE** to `0` broadcasts the command to **all** nodes on the bus.
+
+### Changing settings
+
+4. Double-click any value under **Node Device Settings** to edit it. Once you've confirmed the change works, click **SAVE TO FLASH** so it persists across power cycles.
+
+### Updating firmware
+
+5. Click **UPDATE FIRMWARE** to automatically flash the latest firmware straight from this GitHub repo.
 
 <p float="left">
   <img src="https://github.com/user-attachments/assets/fc04c014-c239-455f-8515-ca8a926522e6" width="60%" />
-  <img src="https://github.com/user-attachments/assets/ceb72661-ec54-4ed3-aaed-dc5fe9b0db12" width="28%" /> 
+  <img src="https://github.com/user-attachments/assets/ceb72661-ec54-4ed3-aaed-dc5fe9b0db12" width="28%" />
 </p>
 
-6. (optional) Once connected via USB you can enable configure WiFi information to wirelessly connect over websockets. You can then disconnect from USB and connect via WiFi with either the hostname "canbus-stepper-[NODE ID].local" or the IP address of the node. 
+### Connecting over WiFi *(optional)*
+
+6. While connected via USB, enter your WiFi details to enable wireless control over WebSockets. You can then unplug the USB and connect using either:
+   - the hostname `canbus-stepper-[NODE ID].local`, or
+   - the node's IP address.
 
 <p float="left">
   <img src="https://github.com/user-attachments/assets/96b8514c-f808-4762-acfe-8a27aed66d46" width="55%" />
-  <img src="https://github.com/user-attachments/assets/71e49f1b-d34d-458a-89e9-64133c448618" width="43%" /> 
+  <img src="https://github.com/user-attachments/assets/71e49f1b-d34d-458a-89e9-64133c448618" width="43%" />
 </p>
-(Note that analog input functionality of the AUX connector will not be usable when WiFI is enabled due to an IO clash).
 
+> [!NOTE]
+> The **analog input** on the AUX connector can't be used while WiFi is enabled, due to an IO clash.
 
-## Closed Loop Control
+---
 
-To enable closed loop control in the web GUI:
+## 5. Closed Loop Control
 
-1. Under "LIVE TELEMETRY, take note of the "Encoder Angle (deg)" value.
-2. Change the "Set Position (deg)" to 360 by double clicking the value.
-3. The "Encoder Angle (deg)" should increase by 360 deg ± 1 deg. If this instead decreases by 360 set the "Map Direction" to 1. If it increases by 180 degrees, set the "Steps per Rev" to 400.
-4. Change "Closed Loop Type" to 1.
-5. Once confirmed working, press "Save to Flash" to remember settings next power cycle.
+To enable closed loop control from the Web GUI:
 
-## Sensorless Homing
+1. Under **LIVE TELEMETRY**, note the current **Encoder Angle (deg)**.
+2. Double-click **Set Position (deg)** and set it to `360`.
+3. Check how the **Encoder Angle** changed:
 
-Sensorless homing is available via the StallGuard feature of the TMC2209 driver. This allows the motor to find a home position by detecting an increase in the motor load once it reaches a hard stop. The CAN Node software exposes this for easy use.
+   | Encoder Angle result | Action |
+   |---|---|
+   | Increased by 360° (± 1°) | ✅ All good, continue |
+   | Decreased by 360° | Set **Map Direction** to `1` |
+   | Increased by 180° | Set **Steps per Rev** to `400` |
 
-The procedure for sensorless homing it is as follows:
+4. Set **Closed Loop Type** to `1`.
+5. Once it's working, click **SAVE TO FLASH**.
 
-  1. Set "Stallguard Behaviour" (MsgType 7) to 4.
+---
 
-  2. Set "Set Velocity (deg/sec)" (MsgType 3) to your desired speed / direction.
+## 6. Sensorless Homing
 
-Once the stall guard is triggered it will stop the motor and reset the zero position. (other stall behaviours can also be set by changing the "Stallguard Behaviour")
+Sensorless homing uses the **StallGuard** feature of the TMC2209 driver. The motor drives until it hits a hard stop, detects the increase in load, then stops and sets that point as zero.
 
-You can adjust the "Stallguard Threshold" (MsgType 12) to change at what motor load this is triggered, and live view "Stallguard Value" to view the live value. All configurable via the web GUI.
+### Procedure
 
-## Serial Control
+1. Set **Stallguard Behaviour** (MsgType `7`) to `4`.
+2. Set **Set Velocity (deg/sec)** (MsgType `3`) to your desired speed and direction.
 
-To control a CANBUS Stepper node (or systems of nodes) over hardware serial, the AUX connector can be configured for serial Control.
+When StallGuard triggers, the motor stops and the zero position is reset.
 
-Double click the "AUX Connector" setting, and select "Serial Control"
+### Tuning
 
-<img width="606" height="406" alt="image" src="https://github.com/user-attachments/assets/4003c5b0-0bea-4c77-a773-f1d0a084e380" />
+| Setting | MsgType | Purpose |
+|---|:---:|---|
+| Stallguard Threshold | `12` | Adjusts the motor load at which a stall is detected |
+| Stallguard Value | N/A | Live readout of the current load (useful for tuning the threshold) |
+| Stallguard Behaviour | `7` | Choose what happens on a stall (`4` = stop and re-zero) |
 
-Serial control is at 115200 Baud, format 8N1. Serial messages follow the same format as CAN packets. See the CAN Protocol document for more information.
+All of these are available in the Web GUI.
 
-You will always still be able to use the USB serial connection as well.
+---
 
-## Custom CAN Messages
+## 7. Serial Control
 
-There is a CAN message builder on the top right which allows CAN messaged to be built up. This is useful for debugging CAN messages when building your own control interface.
+The **AUX connector** can be configured to control a node (or a whole system of nodes) over hardware serial.
 
-See the CAN Protocol document for for info on the CAN packet structure.
+1. Double-click the **AUX Connector** setting.
+2. Select **Serial Control**.
 
+<img width="606" alt="AUX connector set to Serial Control" src="https://github.com/user-attachments/assets/4003c5b0-0bea-4c77-a773-f1d0a084e380" />
+
+| Parameter | Value |
+|---|---|
+| Baud rate | `115200` |
+| Format | `8N1` |
+| Message format | Same as CAN packets (see the **CAN Protocol** document) |
+
+> [!NOTE]
+> The USB serial connection remains available while serial control is enabled.
+
+---
+
+## 8. Custom CAN Messages
+
+The **CAN message builder** (top right of the Web GUI) lets you build and send CAN messages manually. This is handy for debugging when you're writing your own control interface.
+
+See the **CAN Protocol** document for details on the packet structure.
