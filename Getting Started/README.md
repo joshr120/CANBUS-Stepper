@@ -103,7 +103,7 @@ It is viewable online at [thingsbyjosh.com/canbus_gui](https://thingsbyjosh.com/
   <img src="https://github.com/user-attachments/assets/ceb72661-ec54-4ed3-aaed-dc5fe9b0db12" width="28%" /> 
 </p>
 
-6. Once connected via USB you can enable configure WiFi information to wirelessly connect over websockets. You can then disconnect from USB and connect via WiFi with either the hostname "canbus-stepper-[NODE ID].local" or the IP address of the node. 
+6. (optional) Once connected via USB you can enable configure WiFi information to wirelessly connect over websockets. You can then disconnect from USB and connect via WiFi with either the hostname "canbus-stepper-[NODE ID].local" or the IP address of the node. 
 
 <p float="left">
   <img src="https://github.com/user-attachments/assets/96b8514c-f808-4762-acfe-8a27aed66d46" width="55%" />
